@@ -37,7 +37,8 @@ import {
   type CodexSessionContextSnapshotResolver,
   createCodexSessionContextSnapshotResolver,
 } from '../providers/codex-session-context-snapshot.js';
-import { extractImagePaths } from '../providers/image-paths.js';
+import { appendPasteFileContent } from '../providers/image-cli-bridge.js';
+import { extractImagePaths, extractPastePaths } from '../providers/image-paths.js';
 
 const log = createModuleLogger('codex-agent');
 
@@ -238,7 +239,9 @@ export class CodexAgentService implements AgentService {
 
   async *invoke(prompt: string, options?: AgentServiceOptions): AsyncIterable<AgentMessage> {
     // Codex CLI has no system prompt flag; prepend identity to prompt text
-    const effectivePrompt = options?.systemPrompt ? `${options.systemPrompt}\n\n${prompt}` : prompt;
+    let effectivePrompt = options?.systemPrompt ? `${options.systemPrompt}\n\n${prompt}` : prompt;
+    const pastePaths = extractPastePaths(options?.contentBlocks, options?.uploadDir);
+    effectivePrompt = await appendPasteFileContent(effectivePrompt, pastePaths);
     const effectiveModel = options?.callbackEnv?.CAT_CAFE_OPENAI_MODEL_OVERRIDE ?? this.model;
     const imagePaths = extractImagePaths(options?.contentBlocks, options?.uploadDir);
     const imageArgs = imagePaths.flatMap((path) => ['--image', path]);

@@ -27,8 +27,12 @@ import { formatCliNotFoundError, resolveCliCommand } from '../../../../../utils/
 import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import type { AgentMessage, AgentService, AgentServiceOptions, MessageMetadata } from '../../types.js';
-import { appendLocalImagePathHints, collectImageAccessDirectories } from '../providers/image-cli-bridge.js';
-import { extractImagePaths } from '../providers/image-paths.js';
+import {
+  appendLocalImagePathHints,
+  appendPasteFileContent,
+  collectImageAccessDirectories,
+} from '../providers/image-cli-bridge.js';
+import { extractImagePaths, extractPastePaths } from '../providers/image-paths.js';
 import { findGitBashPath } from './claude-agent-win.js';
 import { extractClaudeUsage, isResultErrorEvent, transformClaudeEvent } from './claude-ndjson-parser.js';
 
@@ -184,6 +188,9 @@ export class ClaudeAgentService implements AgentService {
     const imageAccessDirs = collectImageAccessDirectories(imagePaths);
     // Claude CLI print mode has no direct image attach flag; provide path hints and grant dir access.
     effectivePrompt = appendLocalImagePathHints(effectivePrompt, imagePaths);
+    // Paste files: read content and inject directly into prompt so the AI sees the full text.
+    const pastePaths = extractPastePaths(options?.contentBlocks, options?.uploadDir);
+    effectivePrompt = await appendPasteFileContent(effectivePrompt, pastePaths);
 
     // Profile-level model override (e.g. "opus[1m]") takes precedence over constructor model
     const effectiveModel = options?.callbackEnv?.[ANTHROPIC_MODEL_OVERRIDE_KEY]?.trim() || this.model;

@@ -35,8 +35,12 @@ import {
 } from '../../../../../utils/cli-spawn.js';
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import type { AgentMessage, AgentService, AgentServiceOptions, MessageMetadata, TokenUsage } from '../../types.js';
-import { appendLocalImagePathHints, collectImageAccessDirectories } from '../providers/image-cli-bridge.js';
-import { extractImagePaths } from '../providers/image-paths.js';
+import {
+  appendLocalImagePathHints,
+  appendPasteFileContent,
+  collectImageAccessDirectories,
+} from '../providers/image-cli-bridge.js';
+import { extractImagePaths, extractPastePaths } from '../providers/image-paths.js';
 import { isKnownPostResponseCandidatesCrash, isResultErrorEvent, transformGeminiEvent } from './gemini-event-parser.js';
 
 const log = createModuleLogger('gemini-agent');
@@ -196,6 +200,8 @@ export class GeminiAgentService implements AgentService {
     // Gemini CLI -i is prompt-interactive (conflicts with -p), so we pass path hints
     // and include image directories for tool access.
     effectivePrompt = appendLocalImagePathHints(effectivePrompt, imagePaths);
+    const pastePaths = extractPastePaths(options?.contentBlocks, options?.uploadDir);
+    effectivePrompt = await appendPasteFileContent(effectivePrompt, pastePaths);
 
     // Gemini CLI supports UUID session resume in headless mode:
     //   gemini --resume <sessionId> -p "<prompt>" -o stream-json

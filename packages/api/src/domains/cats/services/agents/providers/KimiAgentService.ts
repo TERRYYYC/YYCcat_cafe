@@ -11,8 +11,8 @@ import { isCliError, isCliTimeout, isLivenessWarning, spawnCli } from '../../../
 import type { SpawnFn } from '../../../../../utils/cli-types.js';
 import type { AgentMessage, AgentService, AgentServiceOptions, MessageMetadata } from '../../types.js';
 import { resolveDefaultClaudeMcpServerPath } from './ClaudeAgentService.js';
-import { collectImageAccessDirectories } from './image-cli-bridge.js';
-import { extractImagePaths } from './image-paths.js';
+import { appendPasteFileContent, collectImageAccessDirectories } from './image-cli-bridge.js';
+import { extractImagePaths, extractPastePaths } from './image-paths.js';
 import {
   buildApiKeyEnv,
   buildProjectMcpArgs,
@@ -61,7 +61,9 @@ export class KimiAgentService implements AgentService {
     const metadata: MessageMetadata = { provider: 'kimi', model: effectiveModel };
     const imagePaths = extractImagePaths(options?.contentBlocks, options?.uploadDir);
     const imageAccessDirs = collectImageAccessDirectories(imagePaths);
-    const effectivePrompt = buildKimiPrompt(prompt, options?.systemPrompt, imagePaths);
+    let effectivePrompt = buildKimiPrompt(prompt, options?.systemPrompt, imagePaths);
+    const pastePaths = extractPastePaths(options?.contentBlocks, options?.uploadDir);
+    effectivePrompt = await appendPasteFileContent(effectivePrompt, pastePaths);
     const workingDirectory = options?.workingDirectory ?? process.cwd();
     const apiKeyEnv = buildApiKeyEnv(effectiveModel, options?.callbackEnv);
     const tempMcpConfig = this.mcpServerPath
