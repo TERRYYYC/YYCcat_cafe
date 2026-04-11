@@ -124,7 +124,7 @@ const getMessagesSchema = z.object({
 });
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const MAX_FILES = 5;
+const MAX_FILES = 6; // 5 images + 1 paste file
 
 const DECISION_NOTIFICATION_RE = /\b(review|lgtm|merge|pr)\b/i;
 

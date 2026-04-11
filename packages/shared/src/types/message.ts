@@ -61,9 +61,26 @@ export interface ToolResultContent {
 }
 
 /**
+ * Paste content — long text folded into a .md attachment
+ */
+export interface PasteContent {
+  readonly type: 'paste';
+  readonly url: string;
+  readonly lineCount: number;
+  readonly charCount: number;
+  readonly preview: string;
+}
+
+/**
  * Message content - union of all content types
  */
-export type MessageContent = TextContent | ImageContent | CodeContent | ToolCallContent | ToolResultContent;
+export type MessageContent =
+  | TextContent
+  | ImageContent
+  | CodeContent
+  | ToolCallContent
+  | ToolResultContent
+  | PasteContent;
 
 /**
  * Message status

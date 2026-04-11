@@ -86,13 +86,24 @@ export function useSendMessage(activeThreadId?: string) {
         ...(whisper ? { visibility: whisper.visibility, whisperTo: whisper.whisperTo } : {}),
       };
       if (images && images.length > 0) {
-        userMsg.contentBlocks = [
-          { type: 'text' as const, text: content },
-          ...images.map((img) => ({
-            type: 'image' as const,
-            url: URL.createObjectURL(img),
-          })),
-        ];
+        const imageBlocks = images
+          .filter((f) => f.type.startsWith('image/'))
+          .map((img) => ({ type: 'image' as const, url: URL.createObjectURL(img) }));
+        const pasteFiles = images.filter((f) => f.type === 'text/markdown' || f.type === 'text/plain');
+        const pasteBlocks = await Promise.all(
+          pasteFiles.map(async (f) => {
+            const text = await f.text();
+            const lines = text.split('\n');
+            return {
+              type: 'paste' as const,
+              url: URL.createObjectURL(f),
+              lineCount: lines.length,
+              charCount: text.length,
+              preview: lines.slice(0, 5).join('\n').slice(0, 2000),
+            };
+          }),
+        );
+        userMsg.contentBlocks = [{ type: 'text' as const, text: content }, ...imageBlocks, ...pasteBlocks];
       }
       // F117: Queue sends skip optimistic insert — bubble appears only on messages_delivered
       // (prevents queued message from showing in chat timeline before delivery)

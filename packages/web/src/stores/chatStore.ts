@@ -152,13 +152,18 @@ export function resolveBubbleExpanded(
   return globalDefault === 'expanded';
 }
 
+function getBlobUrl(block: ChatMessage['contentBlocks'] extends (infer B)[] | undefined ? B : never): string | null {
+  if (block.type === 'image' && block.url.startsWith('blob:')) return block.url;
+  if (block.type === 'paste' && block.url.startsWith('blob:')) return block.url;
+  return null;
+}
+
 function revokeBlobUrls(messages: ChatMessage[]) {
   for (const msg of messages) {
     if (msg.contentBlocks) {
       for (const block of msg.contentBlocks) {
-        if (block.type === 'image' && block.url.startsWith('blob:')) {
-          URL.revokeObjectURL(block.url);
-        }
+        const url = getBlobUrl(block);
+        if (url) URL.revokeObjectURL(url);
       }
     }
   }
@@ -169,9 +174,8 @@ function collectBlobUrls(messages: ChatMessage[]): Set<string> {
   for (const msg of messages) {
     if (!msg.contentBlocks) continue;
     for (const block of msg.contentBlocks) {
-      if (block.type === 'image' && block.url.startsWith('blob:')) {
-        blobUrls.add(block.url);
-      }
+      const url = getBlobUrl(block);
+      if (url) blobUrls.add(url);
     }
   }
   return blobUrls;
@@ -182,9 +186,8 @@ function revokeRemovedBlobUrls(previousMessages: ChatMessage[], nextMessages: Ch
   for (const msg of previousMessages) {
     if (!msg.contentBlocks) continue;
     for (const block of msg.contentBlocks) {
-      if (block.type === 'image' && block.url.startsWith('blob:') && !retainedBlobUrls.has(block.url)) {
-        URL.revokeObjectURL(block.url);
-      }
+      const url = getBlobUrl(block);
+      if (url && !retainedBlobUrls.has(url)) URL.revokeObjectURL(url);
     }
   }
 }

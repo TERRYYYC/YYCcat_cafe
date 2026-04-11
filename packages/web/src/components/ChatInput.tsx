@@ -12,6 +12,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useInputHistoryStore } from '@/stores/inputHistoryStore';
 import { apiFetch } from '@/utils/api-client';
 import { compressImage } from '@/utils/compressImage';
+import { createPasteFile, shouldFoldPaste } from '@/utils/pasteDetection';
 import { ChatInputActionButton } from './ChatInputActionButton';
 import { ChatInputMenus } from './ChatInputMenus';
 import { buildCatOptions, type CatOption, detectMenuTrigger, GAME_LIST, WEREWOLF_MODES } from './chat-input-options';
@@ -21,6 +22,7 @@ import { HistorySearchModal } from './HistorySearchModal';
 import { ImagePreview } from './ImagePreview';
 import { AttachIcon } from './icons/AttachIcon';
 import { MobileInputToolbar } from './MobileInputToolbar';
+import { PastePreview } from './PastePreview';
 import { PathCompletionMenu } from './PathCompletionMenu';
 import { WhisperCatSelector, WhisperTargetChips } from './WhisperCatSelector';
 
@@ -82,6 +84,8 @@ export function ChatInput({
   const [mentionFilter, setMentionFilter] = useState('');
   const [images, setImages] = useState<File[]>(() => (threadId ? (threadImageDrafts.get(threadId) ?? []) : []));
   const [isPreparingImages, setIsPreparingImages] = useState(false);
+  const [pastedFile, setPastedFile] = useState<File | null>(null);
+  const [pastedRawText, setPastedRawText] = useState<string>('');
   const [whisperMode, setWhisperMode] = useState(false);
   const [whisperTargets, setWhisperTargets] = useState<Set<string>>(new Set());
 
@@ -151,22 +155,38 @@ export function ChatInput({
       if (sendTemporarilyDisabled) return;
       if (whisperMode && whisperTargets.size === 0) return;
       const trimmed = input.trim();
-      if (trimmed && !disabled) {
-        addHistoryEntry(trimmed);
+      // Allow send if there's text OR a paste file (paste-only messages are valid)
+      if ((trimmed || pastedFile) && !disabled) {
+        if (trimmed) addHistoryEntry(trimmed);
         const whisper =
           whisperMode && whisperTargets.size > 0
             ? { visibility: 'whisper' as const, whisperTo: [...whisperTargets] }
             : undefined;
-        onSend(trimmed, images.length > 0 ? images : undefined, whisper, deliveryMode);
+        // Merge paste file into the files array sent to backend
+        const allFiles = [...images, ...(pastedFile ? [pastedFile] : [])];
+        const content = trimmed || '(pasted text)';
+        onSend(content, allFiles.length > 0 ? allFiles : undefined, whisper, deliveryMode);
         setInput('');
         ghostRef.current = null;
         setGhostSuggestion(null);
         setImages([]);
+        setPastedFile(null);
+        setPastedRawText('');
         setShowMentions(false);
         setShowGameMenu(false);
       }
     },
-    [input, disabled, onSend, images, sendTemporarilyDisabled, whisperMode, whisperTargets, addHistoryEntry],
+    [
+      input,
+      disabled,
+      onSend,
+      images,
+      pastedFile,
+      sendTemporarilyDisabled,
+      whisperMode,
+      whisperTargets,
+      addHistoryEntry,
+    ],
   );
 
   const handleSend = useCallback(() => doSend(undefined), [doSend]);
@@ -417,6 +437,17 @@ export function ChatInput({
     async (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
+
+      // Check for long text paste first
+      const textData = e.clipboardData?.getData('text/plain');
+      if (textData && shouldFoldPaste(textData)) {
+        e.preventDefault();
+        setPastedFile(createPasteFile(textData));
+        setPastedRawText(textData);
+        return;
+      }
+
+      // Existing image paste logic
       const imageFiles: File[] = [];
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.startsWith('image/')) {
@@ -440,6 +471,11 @@ export function ChatInput({
     },
     [images],
   );
+
+  const handleRemovePaste = useCallback(() => {
+    setPastedFile(null);
+    setPastedRawText('');
+  }, []);
 
   const handleRemoveImage = useCallback((index: number) => {
     setImages((prev) => prev.filter((_, i) => i !== index));
@@ -619,6 +655,7 @@ export function ChatInput({
         <WhisperTargetChips cats={whisperCats} selected={whisperTargets} onToggle={toggleWhisperTarget} />
       )}
 
+      {pastedFile && <PastePreview file={pastedFile} rawText={pastedRawText} onRemove={handleRemovePaste} />}
       <ImagePreview files={images} onRemove={handleRemoveImage} />
 
       <input
@@ -752,7 +789,7 @@ export function ChatInput({
           disabled={disabled}
           sendDisabled={sendTemporarilyDisabled}
           hasActiveInvocation={whisperTargetsAllIdle ? false : hasActiveInvocation}
-          hasText={!!input.trim()}
+          hasText={!!input.trim() || !!pastedFile}
         />
       </div>
 

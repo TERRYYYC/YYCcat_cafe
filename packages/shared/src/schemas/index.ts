@@ -18,6 +18,7 @@ export {
   MessageSchema,
   MessageSenderSchema,
   MessageStatusSchema,
+  PasteContentSchema,
   SendMessageRequestSchema,
   TextContentSchema,
   ToolCallContentSchema,

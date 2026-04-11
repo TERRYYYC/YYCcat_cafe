@@ -4,9 +4,15 @@
  * 从 messages.ts 提取，降低文件复杂度。
  */
 
-import type { ImageContent, MessageContent, TextContent } from '@cat-cafe/shared';
+import type { ImageContent, MessageContent, PasteContent, TextContent } from '@cat-cafe/shared';
 import type { Multipart } from '@fastify/multipart';
-import { ImageUploadError, saveUploadedImages, type UploadImageFile } from './image-upload.js';
+import {
+  ImageUploadError,
+  isPasteMime,
+  saveUploadedImages,
+  saveUploadedPaste,
+  type UploadImageFile,
+} from './image-upload.js';
 import { sendMessageSchema } from './messages.schema.js';
 
 export type ParsedMultipart =
@@ -67,10 +73,20 @@ export async function parseMultipart(
   const blocks: MessageContent[] = [{ type: 'text', text: content } as TextContent];
 
   if (files.length > 0) {
+    // Split files into images and pastes
+    const imageFiles = files.filter((f) => !isPasteMime(f.mimetype));
+    const pasteFiles = files.filter((f) => isPasteMime(f.mimetype));
+
     try {
-      const saved = await saveUploadedImages(files, uploadDir);
-      for (const img of saved) {
-        blocks.push(img.content as ImageContent);
+      if (imageFiles.length > 0) {
+        const saved = await saveUploadedImages(imageFiles, uploadDir);
+        for (const img of saved) {
+          blocks.push(img.content as ImageContent);
+        }
+      }
+      for (const pasteFile of pasteFiles) {
+        const saved = await saveUploadedPaste(pasteFile, uploadDir);
+        blocks.push(saved.content as PasteContent);
       }
     } catch (err) {
       if (err instanceof ImageUploadError) {

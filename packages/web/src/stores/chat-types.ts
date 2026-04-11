@@ -9,7 +9,15 @@ export interface ImageContent {
   url: string;
 }
 
-export type MessageContent = TextContent | ImageContent;
+export interface PasteContent {
+  type: 'paste';
+  url: string;
+  lineCount: number;
+  charCount: number;
+  preview: string;
+}
+
+export type MessageContent = TextContent | ImageContent | PasteContent;
 
 /** F8: Token usage data from CLI invocations.
  *  inputTokens = TOTAL input (normalised across providers).

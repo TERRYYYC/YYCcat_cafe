@@ -76,6 +76,17 @@ export const ToolResultContentSchema = z.object({
 });
 
 /**
+ * Paste content schema — long text folded into a .md attachment
+ */
+export const PasteContentSchema = z.object({
+  type: z.literal('paste'),
+  url: z.string(),
+  lineCount: z.number().int().min(1),
+  charCount: z.number().int().min(1),
+  preview: z.string().max(2000),
+});
+
+/**
  * Message content schema - discriminated union
  */
 export const MessageContentSchema = z.discriminatedUnion('type', [
@@ -84,6 +95,7 @@ export const MessageContentSchema = z.discriminatedUnion('type', [
   CodeContentSchema,
   ToolCallContentSchema,
   ToolResultContentSchema,
+  PasteContentSchema,
 ]);
 
 /**

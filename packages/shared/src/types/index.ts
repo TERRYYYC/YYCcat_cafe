@@ -262,6 +262,7 @@ export type {
   MessageContent,
   MessageSender,
   MessageStatus,
+  PasteContent,
   TextContent,
   ToolCallContent,
   ToolResultContent,

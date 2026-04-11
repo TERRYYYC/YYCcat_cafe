@@ -6,9 +6,10 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { ImageContent } from '@cat-cafe/shared';
+import type { ImageContent, PasteContent } from '@cat-cafe/shared';
 
 const ALLOWED_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const PASTE_MIMES = new Set(['text/markdown', 'text/plain']);
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_FILES = 5;
 
@@ -76,6 +77,57 @@ function mimeToExt(mime: string): string {
     default:
       return '.bin';
   }
+}
+
+export interface SavedPaste {
+  absPath: string;
+  urlPath: string;
+  content: PasteContent;
+}
+
+const DEFAULT_PREVIEW_LINES = 5;
+
+/**
+ * Validate and save an uploaded paste file (.md / .txt).
+ * Returns paste metadata for contentBlocks.
+ */
+export async function saveUploadedPaste(file: UploadImageFile, uploadDir: string): Promise<SavedPaste> {
+  if (!PASTE_MIMES.has(file.mimetype)) {
+    throw new ImageUploadError(`Unsupported paste type: ${file.mimetype}`);
+  }
+
+  const buffer = await file.toBuffer();
+  if (buffer.byteLength > MAX_FILE_SIZE) {
+    throw new ImageUploadError(`Paste too large: ${buffer.byteLength} bytes (max ${MAX_FILE_SIZE})`);
+  }
+
+  await mkdir(uploadDir, { recursive: true });
+
+  const filename = `${Date.now()}-${randomUUID().slice(0, 8)}.md`;
+  const absPath = resolve(join(uploadDir, filename));
+  await writeFile(absPath, buffer);
+
+  const text = buffer.toString('utf-8');
+  const lines = text.split('\n');
+  const MAX_PREVIEW_CHARS = 2000;
+  const preview = lines.slice(0, DEFAULT_PREVIEW_LINES).join('\n').slice(0, MAX_PREVIEW_CHARS);
+
+  return {
+    absPath,
+    urlPath: `/uploads/${filename}`,
+    content: {
+      type: 'paste',
+      url: `/uploads/${filename}`,
+      lineCount: lines.length,
+      charCount: text.length,
+      preview,
+    },
+  };
+}
+
+/** Check if a MIME type is a paste (text/markdown or text/plain) */
+export function isPasteMime(mime: string): boolean {
+  return PASTE_MIMES.has(mime);
 }
 
 export class ImageUploadError extends Error {
