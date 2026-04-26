@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { SCREENSHOT_BODY_LIMIT_BYTES } from '@cat-cafe/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { AuditEventTypes, getEventAuditLog } from '../domains/cats/services/index.js';
 import type { PortDiscoveryService } from '../domains/preview/port-discovery.js';
@@ -19,6 +20,20 @@ export const previewRoutes: FastifyPluginAsync<PreviewRouteOpts> = async (app, o
   const { portDiscovery, gatewayPort, runtimePorts } = opts;
   const auditLog = getEventAuditLog();
   const gatewayAvailable = gatewayPort > 0;
+
+  // Plugin-scope error handler (Fastify encapsulation isolates this from outer scope).
+  // FST_ERR_CTP_BODY_TOO_LARGE fires in the content parser stage before the route handler runs,
+  // so it must be caught here, not inside the screenshot handler.
+  app.setErrorHandler((error, _request, reply) => {
+    if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+      return reply.status(413).send({
+        error: '上传内容过大',
+        code: 'PAYLOAD_TOO_LARGE',
+        maxBytes: SCREENSHOT_BODY_LIMIT_BYTES,
+      });
+    }
+    return reply.send(error);
+  });
 
   app.get('/api/preview/status', async () => {
     return { available: gatewayAvailable, gatewayPort };
@@ -124,25 +139,31 @@ export const previewRoutes: FastifyPluginAsync<PreviewRouteOpts> = async (app, o
   );
 
   // F120 Phase C: Screenshot upload — converts data URL to file
-  app.post<{ Body: { dataUrl: string; threadId?: string } }>('/api/preview/screenshot', async (req, reply) => {
-    const { dataUrl, threadId } = req.body;
-    const match = dataUrl?.match(/^data:image\/(png|jpeg|webp);base64,(.+)$/);
-    if (!match) {
-      return reply.status(400).send({ error: 'Invalid data URL — expected data:image/{png|jpeg|webp};base64,...' });
-    }
-    const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!;
-    const buffer = Buffer.from(match[2]!, 'base64');
-    const uploadDir = getDefaultUploadDir(process.env.UPLOAD_DIR);
-    await mkdir(uploadDir, { recursive: true });
-    const filename = `screenshot-${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`;
-    await writeFile(join(uploadDir, filename), buffer);
-    auditLog
-      .append({
-        type: AuditEventTypes.BROWSER_PREVIEW_OPEN,
-        threadId,
-        data: { action: 'screenshot', filename },
-      })
-      .catch(() => {});
-    return { url: `/uploads/${filename}` };
-  });
+  // Route-level bodyLimit (top-level option, not config.bodyLimit). Covers base64 + JSON wrap
+  // overhead for raw images up to AVATAR_RAW_FILE_LIMIT_BYTES (10 MiB).
+  app.post<{ Body: { dataUrl: string; threadId?: string } }>(
+    '/api/preview/screenshot',
+    { bodyLimit: SCREENSHOT_BODY_LIMIT_BYTES },
+    async (req, reply) => {
+      const { dataUrl, threadId } = req.body;
+      const match = dataUrl?.match(/^data:image\/(png|jpeg|webp);base64,(.+)$/);
+      if (!match) {
+        return reply.status(400).send({ error: 'Invalid data URL — expected data:image/{png|jpeg|webp};base64,...' });
+      }
+      const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!;
+      const buffer = Buffer.from(match[2]!, 'base64');
+      const uploadDir = getDefaultUploadDir(process.env.UPLOAD_DIR);
+      await mkdir(uploadDir, { recursive: true });
+      const filename = `screenshot-${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`;
+      await writeFile(join(uploadDir, filename), buffer);
+      auditLog
+        .append({
+          type: AuditEventTypes.BROWSER_PREVIEW_OPEN,
+          threadId,
+          data: { action: 'screenshot', filename },
+        })
+        .catch(() => {});
+      return { url: `/uploads/${filename}` };
+    },
+  );
 };

@@ -1,8 +1,15 @@
 'use client';
 
+import { AVATAR_RAW_FILE_LIMIT_BYTES } from '@cat-cafe/shared';
 import { apiFetch } from '@/utils/api-client';
 
 export async function uploadAvatarAsset(file: File): Promise<string> {
+  if (file.size > AVATAR_RAW_FILE_LIMIT_BYTES) {
+    const limitMiB = AVATAR_RAW_FILE_LIMIT_BYTES / (1024 * 1024);
+    const actualMiB = (file.size / (1024 * 1024)).toFixed(1);
+    throw new Error(`图片过大（${actualMiB} MiB），最大 ${limitMiB} MiB`);
+  }
+
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result ?? ''));
