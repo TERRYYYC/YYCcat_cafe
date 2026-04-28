@@ -30,10 +30,17 @@ describe('uploadAvatarAsset size gate', () => {
     expect(mockApiFetch).not.toHaveBeenCalled();
   });
 
-  it('forwards request when file size is within the avatar limit', async () => {
+  it('forwards request to /api/uploads/avatar with multipart FormData', async () => {
     const small = new File([new Uint8Array(1024)], 'small.png', { type: 'image/png' });
     const url = await uploadAvatarAsset(small);
     expect(url).toBe('/uploads/x.png');
     expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    const [requestUrl, requestInit] = mockApiFetch.mock.calls[0]!;
+    expect(requestUrl).toBe('/api/uploads/avatar');
+    expect(requestInit?.method).toBe('POST');
+    expect(requestInit?.body).toBeInstanceOf(FormData);
+    const body = requestInit?.body as FormData;
+    const filePart = body.get('file');
+    expect(filePart).toBeInstanceOf(File);
   });
 });

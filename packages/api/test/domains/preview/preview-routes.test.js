@@ -3,7 +3,6 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { SCREENSHOT_BODY_LIMIT_BYTES } from '@cat-cafe/shared';
 import Fastify from 'fastify';
 import { PortDiscoveryService } from '../../../dist/domains/preview/port-discovery.js';
 import { previewRoutes } from '../../../dist/routes/preview.js';
@@ -313,37 +312,5 @@ describe('POST /api/preview/screenshot', () => {
     const filename = body.url.replace('/uploads/', '');
     const saved = await stat(join(customUploadDir, filename));
     assert.equal(saved.isFile(), true);
-  });
-
-  it('accepts payload close to max avatar asset size (~7 MiB raw) and writes to UPLOAD_DIR', async () => {
-    const rawBytes = 7 * 1024 * 1024;
-    const buffer = Buffer.alloc(rawBytes);
-    const dataUrl = `data:image/png;base64,${buffer.toString('base64')}`;
-    const res = await app3.inject({
-      method: 'POST',
-      url: '/api/preview/screenshot',
-      payload: { dataUrl },
-    });
-    assert.equal(res.statusCode, 200);
-    const body = JSON.parse(res.body);
-    assert.ok(body.url, 'should return upload URL');
-    const filename = body.url.replace('/uploads/', '');
-    const saved = await stat(join(customUploadDir, filename));
-    assert.equal(saved.isFile(), true);
-    assert.equal(saved.size, rawBytes, 'saved file size should match the input buffer length');
-  });
-
-  it('rejects oversized payload with structured 413 error', async () => {
-    const buffer = Buffer.alloc(11 * 1024 * 1024);
-    const dataUrl = `data:image/png;base64,${buffer.toString('base64')}`;
-    const res = await app3.inject({
-      method: 'POST',
-      url: '/api/preview/screenshot',
-      payload: { dataUrl },
-    });
-    assert.equal(res.statusCode, 413);
-    const body = JSON.parse(res.body);
-    assert.equal(body.code, 'PAYLOAD_TOO_LARGE');
-    assert.equal(body.maxBytes, SCREENSHOT_BODY_LIMIT_BYTES);
   });
 });
