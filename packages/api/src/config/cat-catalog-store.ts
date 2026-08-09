@@ -49,7 +49,7 @@ const LEGACY_GEMINI_CONSUMER_CAT_IDS = new Set(['gemini', 'gemini25', 'gemini35'
 const AGY_GEMINI_DEFAULT_MODEL_BY_CAT_ID = new Map([
   ['gemini', 'Gemini 3.1 Pro (High)'],
   ['gemini25', 'Gemini 3.5 Flash (High)'],
-  ['gemini35', 'Gemini 3.5 Flash (High)'],
+  ['gemini35', 'Gemini 3.6 Flash (High)'],
 ]);
 const AGY_GEMINI_MODEL_BY_LEGACY_MODEL_ID = new Map([
   ['gemini-2.5-pro', 'Gemini 3.1 Pro (High)'],
@@ -60,6 +60,7 @@ const AGY_GEMINI_MODEL_BY_LEGACY_MODEL_ID = new Map([
   ['gemini-3.1-pro', 'Gemini 3.1 Pro (High)'],
   ['gemini-3.1-pro-preview', 'Gemini 3.1 Pro (High)'],
   ['gemini-3.5-flash', 'Gemini 3.5 Flash (High)'],
+  ['gemini-3.6-flash', 'Gemini 3.6 Flash (High)'],
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
