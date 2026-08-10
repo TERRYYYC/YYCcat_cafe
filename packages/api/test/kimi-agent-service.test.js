@@ -1519,7 +1519,11 @@ test('native L0 resume: cliConfigArgs cannot swap the fingerprint-verified sessi
     const args = spawnFn.mock.calls[0].arguments[1];
     assert.ok(!args.includes('sess-unverified'), 'user cliConfigArgs must not select an unverified session');
     assert.equal(args.filter((a) => a === '--session' || a === '-S').length, 1, 'exactly one session flag survives');
-    assert.equal(args[args.indexOf('--session') + 1], 'sess-verified', 'the gate-verified session must be the one used');
+    assert.equal(
+      args[args.indexOf('--session') + 1],
+      'sess-verified',
+      'the gate-verified session must be the one used',
+    );
     // The gate said "resume verified" — metadata and argv must agree, not diverge silently.
     const init = msgs.find((m) => m.type === 'session_init');
     assert.equal(init?.sessionId, 'sess-verified');
