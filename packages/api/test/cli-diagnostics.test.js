@@ -56,6 +56,21 @@ test('#1324: ordinary unknown stderr must still fall through (no over-matching)'
   assert.strictEqual(d.reasonCode, undefined, 'a mere flag mention is not an argv rejection');
 });
 
+// @codex-terra P2 on PR #1325: F127 cliConfigArgs lets an operator pass their own flags.
+// A rejected *user* flag is not a harness/CLI version drift — blaming it on the harness
+// tells the user "this is not your config" (false) and auto-files an issue for their typo.
+test('#1325: a rejected USER flag must NOT be attributed to harness argv drift', () => {
+  const d = buildCliDiagnostics({
+    rawText: "error: unknown option '--definitely-not-a-real-kimi-flag'",
+    debugRef: baseRef,
+  });
+  assert.notStrictEqual(
+    d.reasonCode,
+    'incompatible_cli_arguments',
+    'only MANAGED argv (harness-built flags) counts as version drift',
+  );
+});
+
 test('AC-A1 + AC-A5: known reasonCode → safeExcerpt filled, publicSummary/Hint reasonable', () => {
   const d = buildCliDiagnostics({
     rawText:

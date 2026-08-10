@@ -139,11 +139,23 @@ export const CLASSIFIER_PATTERNS: Array<{ code: CliErrorReasonCode; regex: RegEx
   // (`unexpected argument`, `unrecognized arguments`) — no witness in our logs yet; add them
   // when one shows up, not before.
   //
+  // @codex-terra P2 on PR #1325: the first cut matched ANY rejected flag. But F127
+  // cliConfigArgs lets an operator pass their own flags, so a typo like
+  // `--definitely-not-a-real-flag` would have been blamed on the harness — telling the
+  // user "this is not your config" (false) and, once the F222 allowlist entry below
+  // lands, auto-filing an issue against ourselves for someone's typo.
+  //
+  // This reasonCode means specifically: MANAGED argv (flags the harness itself builds)
+  // drifted from the installed CLI version. So the pattern is anchored to the managed
+  // system-prompt flags, not to flag-rejection in general. A generic user-flag rejection
+  // needs its own neutral reasonCode/hint — deliberately not invented here without a
+  // witness (LL-059), and called out in the PR body as an explicit gap.
+  //
   // Both phrases are highly specific, so ordering is not load-bearing; kept above the broad
   // AC-A4 keyword block for provenance clarity.
   {
     code: 'incompatible_cli_arguments',
-    regex: /unknown option\s+['"`]?--[\w-]+|Cannot combine\s+['"`]?--[\w-]+/i,
+    regex: /(?:unknown option|Cannot combine)\s+['"`]?--agent(?:-file)?\b/i,
   },
   // New 7 (AC-A4) — ordered most-specific first to avoid mis-classification
   {
