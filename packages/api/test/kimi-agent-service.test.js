@@ -1435,8 +1435,53 @@ test('native L0 resume: matching fingerprint honors --session', async () => {
     const args = spawnFn.mock.calls[0].arguments[1];
     assert.ok(args.includes('--session'), 'matching fingerprint must resume');
     assert.equal(args[args.indexOf('--session') + 1], 'sess-match');
+    assert.ok(
+      !args.includes('--agent-file'),
+      'kimi-code rejects --agent-file combined with --session (agent is bound at session creation)',
+    );
     const freshInfo = msgs.find((m) => m.type === 'system_info' && /l0_resume_fresh_start/.test(m.content ?? ''));
     assert.equal(freshInfo, undefined, 'no fresh-start notice on clean resume');
+  } finally {
+    restore();
+    rmSync(shareDir, { recursive: true, force: true });
+  }
+});
+
+// kimi-code >=0.30 turned the previously-silent no-op into a hard arg error:
+//   "error: Cannot combine --agent/--agent-file with --session/--continue:
+//    the agent is bound at session creation and the bound agent is restored
+//    automatically on resume."
+// Observed as exit 1 on every resumed kimi turn from 2026-08-09 (CLI 0.34.0).
+// The L0 must still be compiled on resume — the fingerprint gate above depends
+// on it — but the agent file only ever applied to a *new* session.
+test('native L0 resume: compiles L0 for the fingerprint gate but passes no agent flag', async () => {
+  const restore = enterNonLegacyKimiPath();
+  const shareDir = mkdtempSync(join(tmpdir(), 'kimi-fp-noagent-'));
+  try {
+    writeFingerprintStore(shareDir, {
+      'kimi:sess-bound': { fingerprint: computeKimiL0Fingerprint('L0_V1'), catId: 'kimi', updatedAt: 1 },
+    });
+    const proc = createMockProcess();
+    const spawnFn = createMockSpawnFn(proc);
+    const l0CompilerFn = mock.fn(async () => 'L0_V1');
+    const service = new KimiAgentService({ spawnFn, model: 'kimi-code/k3', l0CompilerFn });
+
+    const promise = collect(
+      service.invoke('Continue', {
+        sessionId: 'sess-bound',
+        systemPrompt: 'PACK_CONTENT',
+        callbackEnv: { KIMI_SHARE_DIR: shareDir },
+      }),
+    );
+    await new Promise((r) => setImmediate(r));
+    emitKimiEvents(proc, [{ role: 'assistant', content: 'resumed' }]);
+    await promise;
+
+    assert.equal(l0CompilerFn.mock.callCount(), 1, 'resume still compiles L0 to verify the fingerprint');
+    const args = spawnFn.mock.calls[0].arguments[1];
+    assert.ok(args.includes('--session'), 'verified fingerprint resumes the bound session');
+    assert.ok(!args.includes('--agent-file'), '--agent-file must not travel with --session');
+    assert.ok(!args.includes('--agent'), '--agent must not travel with --session');
   } finally {
     restore();
     rmSync(shareDir, { recursive: true, force: true });
