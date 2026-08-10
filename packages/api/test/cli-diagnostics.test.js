@@ -22,6 +22,40 @@ test('AC-A5: unknown stderr → sanitized safeExcerpt (#857), publicSummary fall
   assert.ok(d.publicHint.length > 0);
 });
 
+// clowder-ai#1324 / #848: the harness's argv and the installed CLI version drift apart.
+// Two witnessed shapes from the SAME disease, 76 events over 2026-08-06..08-10:
+//   48x  error: unknown option '--agent-file'                    (kimi-code lacked the flag)
+//   28x  error: Cannot combine --agent/--agent-file with --session/--continue
+//                                                                 (kimi-code >=0.30 added validation)
+// Both fell through to "未识别的 CLI 错误" + a pointless transient retry. LL-059 discipline:
+// these two regexes come from logged witnesses only — no invented parser variants.
+test('#1324: CLI argv/version incompatibility classifies instead of falling through to unknown', () => {
+  const unknownOption = "error: unknown option '--agent-file'";
+  const cannotCombine =
+    'error: Cannot combine --agent/--agent-file with --session/--continue: the agent is bound at ' +
+    'session creation and the bound agent is restored automatically on resume.';
+
+  for (const raw of [unknownOption, cannotCombine]) {
+    const d = buildCliDiagnostics({ rawText: raw, debugRef: baseRef });
+    assert.strictEqual(d.reasonCode, 'incompatible_cli_arguments', `must classify: ${raw.slice(0, 40)}`);
+    assert.doesNotMatch(d.publicSummary, /未识别/, 'a diagnosable argv error must not read as "unknown"');
+    // KD-1: reasonCode is defined, so the excerpt is admitted through the existing whitelist.
+    assert.ok(d.safeExcerpt, 'classified reasonCode admits safeExcerpt');
+    assert.strictEqual(d.excerptSource, 'classifier');
+  }
+
+  // AC-A9 red line: raw stderr must never reach publicSummary/publicHint verbatim.
+  const d = buildCliDiagnostics({ rawText: cannotCombine, debugRef: baseRef });
+  assert.doesNotMatch(d.publicSummary, /--agent-file/, 'no raw argv text in publicSummary');
+  assert.doesNotMatch(d.publicHint, /--agent-file/, 'no raw argv text in publicHint');
+});
+
+test('#1324: ordinary unknown stderr must still fall through (no over-matching)', () => {
+  // Guard against the classifier swallowing unrelated errors just because they contain a dash.
+  const d = buildCliDiagnostics({ rawText: 'some weird thing happened with --verbose enabled', debugRef: baseRef });
+  assert.strictEqual(d.reasonCode, undefined, 'a mere flag mention is not an argv rejection');
+});
+
 test('AC-A1 + AC-A5: known reasonCode → safeExcerpt filled, publicSummary/Hint reasonable', () => {
   const d = buildCliDiagnostics({
     rawText:

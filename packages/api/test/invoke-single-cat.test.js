@@ -3150,6 +3150,31 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
     );
   });
 
+  it('isTransientCliExitCode1: argv/CLI-version incompatibility must NOT be retried (deterministic)', async () => {
+    const { isTransientCliExitCode1 } = await import(
+      '../dist/domains/cats/services/agents/invocation/invoke-helpers.js'
+    );
+
+    // Real shape after formatCliExitError appends the classified reasonCode.
+    // Witnessed 76x in runtime logs 2026-08-06..08-10 (48x "unknown option
+    // '--agent-file'" + 28x "Cannot combine --agent/--agent-file with
+    // --session/--continue") — every one of them retried once for nothing,
+    // which is where the user-visible "未识别的 CLI 错误 ×2" came from.
+    const argvMsg = 'Kimi CLI: CLI 异常退出 (code: 1, signal: none) [incompatible_cli_arguments]';
+    assert.equal(
+      isTransientCliExitCode1(argvMsg),
+      false,
+      'a CLI that rejected our argv rejects the identical argv again — retrying only doubles the failure',
+    );
+
+    // Regression guard: vanilla transient exit still retries
+    assert.equal(
+      isTransientCliExitCode1('Kimi CLI: CLI 异常退出 (code: 1, signal: none)'),
+      true,
+      'untagged transient exit must stay retryable',
+    );
+  });
+
   it('session self-heal: retries once without --resume when Claude reports missing conversation', async () => {
     let invokeCount = 0;
     const sessionDeletes = [];

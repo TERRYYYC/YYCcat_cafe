@@ -122,6 +122,14 @@ const REASON_TEXT: Record<CliErrorReasonCode, { summary: string; hint: string }>
   // policy engine (Codex 0.98+) rejected content ("flagged for possible cybersecurity risk").
   // NOT a Clowder AI bug — the upstream policy layer made the call. User needs actionable
   // rephrase guidance, not "unknown CLI error" fallback. Excluded from F222 auto-issue.
+  // clowder-ai#1324 (refs #848): harness argv vs installed CLI version drifted apart.
+  // Plain text only — CliDiagnosticsPanel renders publicHint verbatim in a <span>.
+  // Deliberately says "重试也不会好" because the retry is now suppressed: users who saw
+  // the old "未识别的 CLI 错误 ×2" were watching a deterministic failure counted twice.
+  incompatible_cli_arguments: {
+    summary: 'CLI 参数与当前 CLI 版本不兼容',
+    hint: 'CLI 自身的参数解析器拒绝了这次调用——通常是 CLI 升级后某个 flag 被移除、改名，或变成了与其他 flag 互斥，和猫咖的调用方式产生了版本漂移。这不是你的配置或额度问题，重试也不会好（同样的参数会被同样拒绝，系统已跳过无谓重试）。展开下方“详细诊断”能看到 CLI 原文点名的具体参数；把它连同 CLI 版本（例如 kimi --version / codex --version）反馈给维护者即可修复。',
+  },
   upstream_policy_reject: {
     summary: '上游 provider policy 拒绝',
     hint: 'CLI 上游 provider 的 policy 引擎拒绝了这次请求（例如判断为敏感内容）。这不是 Clowder AI bug — 是 provider 侧决策。建议：换个表达方式重试 prompt（provider 通常给了 "try rephrasing" 提示）；换一只不同 provider 的猫；反复触发去查你用的 provider policy 文档（Anthropic / OpenAI / DeepSeek 各有 acceptable use policy）。展开下方"详细诊断"看具体 policy 消息。',

@@ -126,6 +126,25 @@ export const CLASSIFIER_PATTERNS: Array<{ code: CliErrorReasonCode; regex: RegEx
     code: 'upstream_policy_reject',
     regex: /flagged for possible cybersecurity risk/i,
   },
+  // clowder-ai#1324 (refs #848 "CLI upgrade with format incompatibility"): the CLI's own
+  // argument parser rejected the argv the harness built. Deterministic — the same argv is
+  // rejected identically forever, so this also disables the transient retry (invoke-helpers).
+  //
+  // LL-059 discipline — both regexes are transcribed from logged witnesses only, no invented
+  // parser variants. Runtime log survey 2026-08-06..08-10 (108 unknown-CLI-error events total):
+  //   48x  `error: unknown option '--agent-file'`      — kimi-code predating the flag
+  //   28x  `error: Cannot combine --agent/--agent-file with --session/--continue: ...`
+  //                                                    — kimi-code >=0.30 added the validation
+  // Same disease, two CLI versions. Deliberately NOT generalized to clap/argparse phrasings
+  // (`unexpected argument`, `unrecognized arguments`) — no witness in our logs yet; add them
+  // when one shows up, not before.
+  //
+  // Both phrases are highly specific, so ordering is not load-bearing; kept above the broad
+  // AC-A4 keyword block for provenance clarity.
+  {
+    code: 'incompatible_cli_arguments',
+    regex: /unknown option\s+['"`]?--[\w-]+|Cannot combine\s+['"`]?--[\w-]+/i,
+  },
   // New 7 (AC-A4) — ordered most-specific first to avoid mis-classification
   {
     code: 'model_not_found',
