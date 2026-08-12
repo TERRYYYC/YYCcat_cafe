@@ -219,16 +219,18 @@ export class ApprovalIngress {
     const origin = await this.deps.messageStore.getById(draft.originRef.messageId);
     if (!origin || origin.deletedAt || origin._tombstone) throw new Error('Approval origin message not found');
     if (origin.threadId !== draft.originRef.threadId) throw new Error('Approval origin message thread mismatch');
-    // Cross-tenant isolation is the assertion ABOVE: the origin must live in the
-    // caller's own thread. What remains here is a narrower question — who may have
-    // authored a row inside that thread — and a system pseudo-user speaking in your
-    // own thread is not another tenant.
+    // Cross-tenant isolation rests on the assertion ABOVE: the origin must live in
+    // the thread the draft names. What remains here is a narrower question — who
+    // may have authored a row inside that thread — and a system pseudo-user
+    // speaking in your own thread is not another tenant.
     //
-    // Read that precisely (@codex-luna's review): the threadId equality is a
-    // CALLER invariant, not an authorization check this class performs on an
-    // arbitrary draft. It holds on the F225 session-handoff path because that
-    // producer builds the draft from an authenticated InvocationRecord — a request
-    // body cannot rewrite threadId, userId or the trigger messageId.
+    // State that precisely (@codex-luna's review): the CALLER invariant is the
+    // AUTHENTICATED ORIGIN BINDING, not the threadId comparison. This class does
+    // perform that comparison; what it cannot verify is whether the originRef it
+    // was handed — threadId, and the ownerUserId compared below — came from an
+    // authenticated record at all. On the F225 session-handoff path they do: that
+    // producer derives them from an authenticated InvocationRecord, and a request
+    // body cannot rewrite them.
     //
     // ApprovalIngress serves several producers, so that is a property of the F225
     // path and NOT of this class. Any producer deriving a draft from untrusted
