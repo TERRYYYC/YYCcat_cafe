@@ -106,7 +106,8 @@ describe('F167 scheduler-origin exemption over real callback routes', () => {
       socketManager: socket(),
       handoffProposalStore: store,
       sessionChainStore: {
-        getActive: async (catId, threadId) => (catId === session.catId && threadId === session.threadId ? session : null),
+        getActive: async (catId, threadId) =>
+          catId === session.catId && threadId === session.threadId ? session : null,
       },
       evidenceStore: { ingestRaw() {}, search: () => [] },
       markerQueue: { enqueue() {} },

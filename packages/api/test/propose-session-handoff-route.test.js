@@ -402,7 +402,11 @@ describe('propose-session-handoff route (F225 ②a)', () => {
       const ctx = await buildCtx();
       const { response } = await proposeWithOrigin(ctx, { author: { userId: 'scheduler', catId: 'opus' } });
 
-      assert.equal(response.statusCode, 500, 'isSystemUserMessage requires BOTH a system userId and a system/null catId');
+      assert.equal(
+        response.statusCode,
+        500,
+        'isSystemUserMessage requires BOTH a system userId and a system/null catId',
+      );
       assert.match(response.json().message ?? '', /Approval origin message owner mismatch/);
     });
   });
