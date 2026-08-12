@@ -130,10 +130,7 @@ describe('ApprovalIngress', () => {
     const harness = makeHarness({ userId: 'user-2', catId: null });
     const store = new FakePublicationStore();
 
-    await assert.rejects(
-      () => harness.ingress.publish(makeDraft(), store),
-      /Approval origin message owner mismatch/,
-    );
+    await assert.rejects(() => harness.ingress.publish(makeDraft(), store), /Approval origin message owner mismatch/);
   });
 
   // isSystemUserMessage requires BOTH a system userId AND a system/null catId, so
@@ -143,10 +140,7 @@ describe('ApprovalIngress', () => {
     const harness = makeHarness({ userId: 'scheduler', catId: 'codex-sol' });
     const store = new FakePublicationStore();
 
-    await assert.rejects(
-      () => harness.ingress.publish(makeDraft(), store),
-      /Approval origin message owner mismatch/,
-    );
+    await assert.rejects(() => harness.ingress.publish(makeDraft(), store), /Approval origin message owner mismatch/);
   });
 
   it('persists one card, commits its exact envelope, then broadcasts', async () => {
