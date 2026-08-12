@@ -224,6 +224,14 @@ export class ApprovalIngress {
     // authored a row inside that thread — and a system pseudo-user speaking in your
     // own thread is not another tenant.
     //
+    // Read that precisely (砚砚 review): the threadId equality is a CALLER
+    // invariant, not an authorization check this class performs on an arbitrary
+    // draft. It holds today because the only producer of this draft builds it from
+    // an authenticated InvocationRecord — request bodies cannot rewrite threadId,
+    // userId or the trigger messageId. A future producer that derives a draft from
+    // untrusted input must re-establish that binding itself; the exemption below
+    // assumes it rather than proving it.
+    //
     // Without the exemption this rejected precisely the sessions that need it most.
     // A session-handoff proposal anchors on the message that triggered the
     // invocation, and for any long-running session that message IS the scheduler's
