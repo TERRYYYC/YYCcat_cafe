@@ -109,18 +109,46 @@ describe('ApprovalIngress', () => {
   // timer wake failed with "Approval origin message owner mismatch", while the
   // same proposal from an A2A-triggered turn (userId = the real owner) succeeded.
   //
-  // The cross-user protection does not live in this comparison — the preceding
-  // threadId assertion already pins the origin to the caller's own thread. What
-  // this one adds is a rule about WHO may author a row inside that thread, and a
-  // system pseudo-user speaking in your own thread is not another tenant.
-  it('accepts a scheduler-authored origin in the owner thread', async () => {
+  // The threadId assertion does NOT by itself pin the origin to the caller's own
+  // thread: it only proves the stored message belongs to the thread the draft
+  // NAMES. Tenancy holds as a conjunction — the producer binds originRef and
+  // ownerUserId to an authenticated InvocationRecord (fixing which thread may be
+  // named), and this ingress then checks the stored origin is consistent with it.
+  //
+  // Given both, what the userId comparison still decides is narrower: WHO may
+  // author a row inside an already-bound thread — and a system pseudo-user
+  // speaking in that thread is not another tenant.
+  //
+  // This comment previously stated the opposite. It survived four review rounds
+  // that corrected the same claim in ApprovalIngress.ts, because every round
+  // fixed the instance being quoted and nobody grepped for the paraphrase living
+  // here (maintainer review, PR #1347).
+  it('accepts a scheduler-authored origin for a server-attested producer', async () => {
     const harness = makeHarness({ userId: 'scheduler', catId: null });
     const store = new FakePublicationStore();
 
-    const envelope = await harness.ingress.publish(makeDraft(), store);
+    const envelope = await harness.ingress.publish(makeDraft({ producerId: 'F225' }), store);
 
     assert.equal(store.publication.state, 'anchored');
     assert.equal(envelope.approvalCardRef.threadId, 'source-thread');
+  });
+
+  // The exemption is scoped to producers that DECLARE the authenticated origin
+  // binding, because ApprovalIngress is shared and the argument only ever covered
+  // one caller. Without this case the scoping and no scoping are indistinguishable.
+  //
+  // Note this case used to pass as an ACCEPT: makeDraft() defaults to F128, so the
+  // first version of this fix exempted a producer that never proved the binding —
+  // and the passing test read as confirmation. Caught in maintainer review of
+  // PR #1347, not by me or by four local review rounds.
+  it('rejects a scheduler-authored origin for a producer without the attestation', async () => {
+    const harness = makeHarness({ userId: 'scheduler', catId: null });
+    const store = new FakePublicationStore();
+
+    await assert.rejects(
+      () => harness.ingress.publish(makeDraft({ producerId: 'F128' }), store),
+      /Approval origin message owner mismatch/,
+    );
   });
 
   // The exemption must not become a hole. A different HUMAN owner is a genuine

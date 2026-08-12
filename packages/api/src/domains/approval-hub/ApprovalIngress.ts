@@ -233,10 +233,17 @@ export class ApprovalIngress {
     // holds: that producer derives all three from an authenticated
     // InvocationRecord, and a request body cannot rewrite them.
     //
-    // ApprovalIngress serves several producers, so (1) is a property of the F225
-    // path and NOT of this class. Any producer deriving a draft from untrusted
-    // input must itself establish and validate that binding before calling this
-    // ingress; the exemption below assumes (1) rather than proving it.
+    // ApprovalIngress serves several producers, so (1) is a property of a PATH and
+    // never of this class. An earlier revision only documented that and let the
+    // exemption apply to every message-origin producer — which made the exemption
+    // as wide as the shared ingress while the argument for it covered one caller
+    // (maintainer review, PR #1347 gate 2).
+    //
+    // So (1) is now DECLARED per producer and ENFORCED here, not assumed:
+    // `systemOriginExemption: 'server_attested'` in the producer catalog is a
+    // claim that this producer's adapter binds originRef + ownerUserId to an
+    // authenticated InvocationRecord. It is a required field, so a new producer
+    // cannot inherit the exemption by omission — it must say so and be reviewed.
     //
     // Given (1) AND (2), what the comparison below still decides is narrower: who
     // may have authored a row inside an already-verified thread — and a system
@@ -255,7 +262,8 @@ export class ApprovalIngress {
     // requires BOTH a system userId AND a system/null catId, so a cat-authored row
     // wearing a system userId stays rejected. A second, private definition of "is
     // this the system" is how the two drift apart.
-    if (origin.userId !== draft.ownerUserId && !isSystemUserMessage(origin)) {
+    const systemOriginExempt = approvalProducerMeta(draft.producerId).systemOriginExemption === 'server_attested';
+    if (origin.userId !== draft.ownerUserId && !(systemOriginExempt && isSystemUserMessage(origin))) {
       throw new Error('Approval origin message owner mismatch');
     }
   }

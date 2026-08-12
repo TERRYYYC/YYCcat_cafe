@@ -16,6 +16,22 @@ export interface ApprovalProducerCatalogEntry {
   /** Feature-owned approve/reject endpoint base. */
   decisionEndpointBase: string;
   sourcePolicy: 'message-required' | 'message-or-event';
+  /**
+   * Whether this producer may use the system-authored origin exemption in
+   * `ApprovalIngress.validateOrigin`.
+   *
+   * `server_attested` asserts the producer derives `originRef.threadId`,
+   * `originRef.messageId` and `ownerUserId` from an authenticated
+   * InvocationRecord that a request body cannot rewrite. Only then is a system
+   * pseudo-user row inside the already-bound owner thread safe to accept as an
+   * origin, because the caller — not the request — fixed which thread and owner
+   * may be named.
+   *
+   * `forbidden` is the default for every producer that has not demonstrated that
+   * binding. The field is REQUIRED so that adding a producer without deciding
+   * this is a compile error rather than a silent inherited exemption.
+   */
+  systemOriginExemption: 'server_attested' | 'forbidden';
   history: boolean;
   /** Null keeps the producer on its existing binary reject path. */
   humanDispositionReasonCodes: readonly HumanDispositionReasonCode[] | null;
@@ -35,6 +51,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--semantic-info)',
     decisionEndpointBase: '/api/proposals',
     sourcePolicy: 'message-required',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: null,
   },
@@ -44,6 +61,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--semantic-warning, #f59e0b)',
     decisionEndpointBase: '/api/schedule-proposals',
     sourcePolicy: 'message-or-event',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: null,
   },
@@ -53,6 +71,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--semantic-success, #22c55e)',
     decisionEndpointBase: '/api/dispatch-proposals',
     sourcePolicy: 'message-or-event',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: null,
   },
@@ -62,6 +81,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--accent-taste, #e879f9)',
     decisionEndpointBase: '/api/taste-proposals',
     sourcePolicy: 'message-or-event',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: null,
   },
@@ -71,6 +91,10 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--semantic-secondary, #8b5cf6)',
     decisionEndpointBase: '/api/session-handoff',
     sourcePolicy: 'message-required',
+    // callback-propose-session-handoff reads originTriggerMessageId /
+    // a2aTriggerMessageId, threadId and userId off the authenticated
+    // InvocationRecord; the request body cannot rewrite any of them.
+    systemOriginExemption: 'server_attested',
     history: true,
     humanDispositionReasonCodes: HUMAN_DISPOSITION_REASON_CODES,
   },
@@ -80,6 +104,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--semantic-warning, #f59e0b)',
     decisionEndpointBase: '/api/profile-updates',
     sourcePolicy: 'message-required',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: null,
   },
@@ -89,6 +114,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--accent-entity, #06b6d4)',
     decisionEndpointBase: '/api/entity-proposals',
     sourcePolicy: 'message-or-event',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: null,
   },
@@ -98,6 +124,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--accent-people, #14b8a6)',
     decisionEndpointBase: '/api/person-memory-proposals',
     sourcePolicy: 'message-required',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: ['not_important', 'wrong_lane', 'bad_evidence', 'wrong', 'other'],
   },
@@ -107,6 +134,7 @@ export const APPROVAL_PRODUCER_CATALOG = {
     colorToken: 'var(--semantic-info, #3b82f6)',
     decisionEndpointBase: '/api/meeting-intakes',
     sourcePolicy: 'message-or-event',
+    systemOriginExemption: 'forbidden',
     history: true,
     humanDispositionReasonCodes: null,
   },
