@@ -268,19 +268,23 @@ describe('F167 local review verdict completion producer', () => {
     });
   });
 
-  it('rejects existing-standing review custody without a structured author return route', async () => {
+  it('completes existing-standing review custody on the ordinary record path when carrier is present', async () => {
     const lease = createLease({
       claimOrigin: 'existing_standing',
       predecessorCatId: undefined,
       predecessorThreadId: undefined,
     });
-    const { service, completeActionLease } = harness({ lease });
+    // Standing verdict: message must be IN the holderThreadId (no predecessor routing)
+    const message = verdictMessage({ threadId: 'thread-review' });
+    const { service, completeActionLease } = harness({ lease, message });
 
     assert.deepEqual(await service.record(input()), {
-      outcome: 'insufficient',
-      reason: 'local review lease has no structured predecessor route',
+      outcome: 'committed',
+      leaseId: 'lease-review-1',
+      generation: 1,
+      evidenceRef: 'local-review:message-verdict-1:g1:changes_requested',
     });
-    assert.equal(completeActionLease.mock.calls.length, 0);
+    assert.equal(completeActionLease.mock.calls.length, 1);
   });
 });
 
@@ -464,7 +468,7 @@ describe('F167 active stale local-review settlement recovery', () => {
       await wrongThread.service.recover(
         recoveryInput({ principal: { catId: 'codex-sol', threadId: 'other-thread', tenantScope: 'user-1' } }),
       ),
-      { outcome: 'mismatch', reason: 'local review recovery principal does not match the predecessor route' },
+      { outcome: 'mismatch', reason: 'local review recovery principal does not match the custody route' },
     );
 
     const stillCurrent = recoveryHarness({
@@ -496,8 +500,8 @@ describe('F167 active stale local-review settlement recovery', () => {
         reason: 'local review recovery requires one review holder',
       },
       {
-        lease: { ...createLease(), claimOrigin: 'existing_standing' },
-        reason: 'local review recovery requires structured predecessor custody',
+        lease: { ...createLease(), claimOrigin: 'unknown_origin' },
+        reason: 'local review recovery requires structured predecessor or existing standing custody',
       },
       {
         lease: {
@@ -570,5 +574,233 @@ describe('F167 active stale local-review settlement recovery', () => {
     assert.equal(outcomes.filter((result) => result.outcome === 'committed').length, 1);
     assert.equal(outcomes.filter((result) => result.outcome === 'stale').length, 11);
     assert.equal(recoveryCalls.length, 12);
+  });
+
+  it('recovers an existing-standing lease from the holder principal after HEAD advance', async () => {
+    const lease = createLease({
+      claimOrigin: 'existing_standing',
+      predecessorCatId: undefined,
+      predecessorThreadId: undefined,
+      holderCatIds: ['codex-sol'],
+      holderThreadId: 'thread-holder',
+      issuerStandingEvidenceRef: 'operator-message:standing-1',
+    });
+    const message = verdictMessage({
+      id: 'message-standing-verdict',
+      threadId: 'thread-holder',
+      catId: 'codex-sol',
+      content: `CHANGES_REQUESTED\n\nPR #11 exact-HEAD re-review · ${HEAD} for owner/repo#3333.`,
+      extra: {
+        stream: { invocationId: 'parent-inv-review-1', turnInvocationId: 'turn-inv-standing-1' },
+      },
+    });
+    const { service, recoveryCalls, getCurrentLease } = recoveryHarness({
+      lease,
+      message,
+      carrierRecordOverrides: {
+        threadId: 'thread-holder',
+        targetCats: ['codex-sol'],
+        actionLeaseCarrier: { kind: 'none' },
+      },
+    });
+
+    const result = await service.recover(
+      recoveryInput({
+        leaseId: lease.leaseId,
+        messageId: 'message-standing-verdict',
+        principal: { catId: 'codex-sol', threadId: 'thread-holder', tenantScope: 'user-1' },
+      }),
+    );
+    assert.deepEqual(result, {
+      outcome: 'committed',
+      leaseId: 'lease-review-1',
+      generation: 1,
+      evidenceRef: 'local-review:message-standing-verdict:g1:changes_requested',
+    });
+    assert.equal(recoveryCalls.length, 1);
+    assert.equal(recoveryCalls[0].recovery.predecessorCatId, undefined);
+    assert.equal(recoveryCalls[0].recovery.predecessorThreadId, undefined);
+    assert.equal(getCurrentLease().status, 'completed');
+    assert.equal(getCurrentLease().holderOutcomes['codex-sol'].outcome, 'succeeded');
+  });
+
+  it('rejects existing-standing recovery from a non-holder principal', async () => {
+    const lease = createLease({
+      claimOrigin: 'existing_standing',
+      predecessorCatId: undefined,
+      predecessorThreadId: undefined,
+      holderCatIds: ['codex-sol'],
+      holderThreadId: 'thread-holder',
+      issuerStandingEvidenceRef: 'operator-message:standing-1',
+    });
+    const { service, recoveryCalls } = recoveryHarness({ lease });
+
+    const wrongCat = await service.recover(
+      recoveryInput({
+        principal: { catId: 'opus', threadId: 'thread-holder', tenantScope: 'user-1' },
+      }),
+    );
+    assert.equal(wrongCat.outcome, 'mismatch');
+    assert.equal(wrongCat.reason, 'local review recovery caller is not the standing holder');
+
+    const wrongThread = await service.recover(
+      recoveryInput({
+        principal: { catId: 'codex-sol', threadId: 'wrong-thread', tenantScope: 'user-1' },
+      }),
+    );
+    assert.equal(wrongThread.outcome, 'mismatch');
+    assert.equal(wrongThread.reason, 'local review recovery principal does not match the custody route');
+
+    assert.equal(recoveryCalls.length, 0);
+  });
+
+  it('existing-standing recovery verifies identity and content without predecessor routing', async () => {
+    const lease = createLease({
+      claimOrigin: 'existing_standing',
+      predecessorCatId: undefined,
+      predecessorThreadId: undefined,
+      holderCatIds: ['codex-sol'],
+      holderThreadId: 'thread-holder',
+      issuerStandingEvidenceRef: 'operator-message:standing-1',
+    });
+    const goodMessage = verdictMessage({
+      id: 'message-standing-verdict',
+      threadId: 'thread-holder',
+      catId: 'codex-sol',
+      content: `CHANGES_REQUESTED\n\nrepo #3333 exact ${HEAD}.`,
+      extra: {
+        stream: { invocationId: 'parent-inv-review-1', turnInvocationId: 'turn-inv-standing-1' },
+      },
+    });
+    const { service: goodService } = recoveryHarness({
+      lease,
+      message: goodMessage,
+      carrierRecordOverrides: {
+        threadId: 'thread-holder',
+        targetCats: ['codex-sol'],
+        actionLeaseCarrier: { kind: 'none' },
+      },
+    });
+    assert.equal(
+      (
+        await goodService.recover(
+          recoveryInput({
+            messageId: 'message-standing-verdict',
+            principal: { catId: 'codex-sol', threadId: 'thread-holder', tenantScope: 'user-1' },
+          }),
+        )
+      ).outcome,
+      'committed',
+    );
+
+    const noHead = verdictMessage({
+      id: 'message-standing-verdict',
+      threadId: 'thread-holder',
+      catId: 'codex-sol',
+      content: `CHANGES_REQUESTED\n\nrepo #3333 review.`,
+      extra: {
+        stream: { invocationId: 'parent-inv-review-1', turnInvocationId: 'turn-inv-standing-1' },
+      },
+    });
+    const { service: noHeadService } = recoveryHarness({
+      lease,
+      message: noHead,
+      carrierRecordOverrides: {
+        threadId: 'thread-holder',
+        targetCats: ['codex-sol'],
+        actionLeaseCarrier: { kind: 'none' },
+      },
+    });
+    assert.equal(
+      (
+        await noHeadService.recover(
+          recoveryInput({
+            messageId: 'message-standing-verdict',
+            principal: { catId: 'codex-sol', threadId: 'thread-holder', tenantScope: 'user-1' },
+          }),
+        )
+      ).reason,
+      'local review verdict does not bind the exact HEAD',
+    );
+  });
+
+  it('rejects standing evidence from a non-holder thread despite correct author and content tokens (P1-1 thread binding)', async () => {
+    const lease = createLease({
+      claimOrigin: 'existing_standing',
+      predecessorCatId: undefined,
+      predecessorThreadId: undefined,
+      holderCatIds: ['codex-sol'],
+      holderThreadId: 'thread-holder',
+      issuerStandingEvidenceRef: 'operator-message:standing-1',
+    });
+    // Message has correct catId (reviewer) and all three content tokens,
+    // but threadId is NOT the holderThreadId — P1-1 thread binding catches this.
+    const wrongThreadMessage = verdictMessage({
+      id: 'message-wrong-thread',
+      threadId: 'discussion-thread',
+      catId: 'codex-sol',
+      content: `CHANGES_REQUESTED\n\nrepo #3333 exact ${HEAD}.`,
+      extra: {
+        stream: { invocationId: 'parent-inv-review-1', turnInvocationId: 'turn-inv-standing-1' },
+      },
+    });
+    const { service, recoveryCalls } = recoveryHarness({
+      lease,
+      message: wrongThreadMessage,
+      carrierRecordOverrides: {
+        threadId: 'thread-holder',
+        targetCats: ['codex-sol'],
+        actionLeaseCarrier: { kind: 'none' },
+      },
+    });
+    const result = await service.recover(
+      recoveryInput({
+        messageId: 'message-wrong-thread',
+        principal: { catId: 'codex-sol', threadId: 'thread-holder', tenantScope: 'user-1' },
+      }),
+    );
+    assert.equal(result.outcome, 'mismatch');
+    assert.equal(result.reason, 'local review standing verdict does not originate from the holder thread');
+    assert.equal(recoveryCalls.length, 0);
+  });
+
+  it('rejects standing evidence from non-holder thread by non-reviewer despite all content tokens matching (P1-1 combined)', async () => {
+    const lease = createLease({
+      claimOrigin: 'existing_standing',
+      predecessorCatId: undefined,
+      predecessorThreadId: undefined,
+      holderCatIds: ['codex-sol'],
+      holderThreadId: 'thread-holder',
+      issuerStandingEvidenceRef: 'operator-message:standing-1',
+    });
+    // All three content tokens match, but both thread and author are wrong:
+    // a discussion message quoting someone else's verdict.
+    const spoofMessage = verdictMessage({
+      id: 'message-spoof',
+      threadId: 'other-thread',
+      catId: 'impersonator-cat',
+      content: `CHANGES_REQUESTED\n\nrepo #3333 exact ${HEAD}.`,
+      extra: {
+        stream: { invocationId: 'parent-inv-review-1', turnInvocationId: 'turn-inv-standing-1' },
+      },
+    });
+    const { service, recoveryCalls } = recoveryHarness({
+      lease,
+      message: spoofMessage,
+      carrierRecordOverrides: {
+        threadId: 'thread-holder',
+        targetCats: ['codex-sol'],
+        actionLeaseCarrier: { kind: 'none' },
+      },
+    });
+    const result = await service.recover(
+      recoveryInput({
+        messageId: 'message-spoof',
+        principal: { catId: 'codex-sol', threadId: 'thread-holder', tenantScope: 'user-1' },
+      }),
+    );
+    // Rejected at upstream catId check — defense-in-depth standing check would also reject.
+    assert.equal(result.outcome, 'mismatch');
+    assert.equal(recoveryCalls.length, 0);
   });
 });

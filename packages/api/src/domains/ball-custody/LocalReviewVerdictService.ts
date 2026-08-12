@@ -50,7 +50,9 @@ type LocalReviewRecoveryPreflight =
   | { ok: false; result: Exclude<LocalReviewVerdictRecordResult, { outcome: 'committed' }> };
 
 function matchesRecoveryPrincipal(lease: ActionSuccessorLease, input: LocalReviewRecoveryInput): boolean {
-  return lease.predecessorThreadId === input.principal.threadId && lease.tenantScope === input.principal.tenantScope;
+  const expectedThreadId =
+    lease.claimOrigin === 'existing_standing' ? lease.holderThreadId : lease.predecessorThreadId;
+  return expectedThreadId === input.principal.threadId && lease.tenantScope === input.principal.tenantScope;
 }
 
 function isUntouchedRecoveryGeneration(lease: ActionSuccessorLease): boolean {
@@ -72,22 +74,37 @@ function preflightLocalReviewRecovery(
   if (lease.mode !== 'single' || lease.holderCatIds.length !== 1 || !reviewerCatId) {
     return { ok: false, result: { outcome: 'mismatch', reason: 'local review recovery requires one review holder' } };
   }
-  if (lease.claimOrigin !== 'structured_transfer' || !lease.predecessorCatId || !lease.predecessorThreadId) {
+  if (lease.claimOrigin === 'structured_transfer') {
+    if (!lease.predecessorCatId || !lease.predecessorThreadId) {
+      return {
+        ok: false,
+        result: { outcome: 'mismatch', reason: 'local review recovery requires structured predecessor custody' },
+      };
+    }
+    if (lease.predecessorCatId !== input.principal.catId) {
+      return {
+        ok: false,
+        result: { outcome: 'mismatch', reason: 'local review recovery caller is not the lease predecessor' },
+      };
+    }
+  } else if (lease.claimOrigin === 'existing_standing') {
+    const holderCatId = lease.holderCatIds[0];
+    if (!holderCatId || holderCatId !== input.principal.catId) {
+      return {
+        ok: false,
+        result: { outcome: 'mismatch', reason: 'local review recovery caller is not the standing holder' },
+      };
+    }
+  } else {
     return {
       ok: false,
-      result: { outcome: 'mismatch', reason: 'local review recovery requires structured predecessor custody' },
-    };
-  }
-  if (lease.predecessorCatId !== input.principal.catId) {
-    return {
-      ok: false,
-      result: { outcome: 'mismatch', reason: 'local review recovery caller is not the lease predecessor' },
+      result: { outcome: 'mismatch', reason: 'local review recovery requires structured predecessor or existing standing custody' },
     };
   }
   if (!matchesRecoveryPrincipal(lease, input)) {
     return {
       ok: false,
-      result: { outcome: 'mismatch', reason: 'local review recovery principal does not match the predecessor route' },
+      result: { outcome: 'mismatch', reason: 'local review recovery principal does not match the custody route' },
     };
   }
   if (!isUntouchedRecoveryGeneration(lease)) {
@@ -172,6 +189,7 @@ export class LocalReviewVerdictService {
       predecessorCatId: lease.predecessorCatId,
       predecessorThreadId: lease.predecessorThreadId,
       tenantScope: lease.tenantScope,
+      claimOrigin: lease.claimOrigin,
     });
     if (evidence.status !== 'verified') return { outcome: evidence.status, reason: evidence.reason };
 
@@ -219,14 +237,17 @@ export class LocalReviewVerdictService {
       predecessorCatId: lease.predecessorCatId,
       predecessorThreadId: lease.predecessorThreadId,
       tenantScope: lease.tenantScope,
+      claimOrigin: lease.claimOrigin,
     });
     if (evidence.status !== 'verified') return { outcome: evidence.status, reason: evidence.reason };
 
+    const isExistingStanding = lease.claimOrigin === 'existing_standing';
     const completion = await this.deps.leaseStore.recoverLocalReviewVerdict(input.leaseId, {
       expectedGeneration: input.generation,
       reviewerCatId,
-      predecessorCatId: input.principal.catId,
-      predecessorThreadId: input.principal.threadId,
+      ...(isExistingStanding
+        ? {}
+        : { predecessorCatId: input.principal.catId, predecessorThreadId: input.principal.threadId }),
       tenantScope: input.principal.tenantScope,
       headSha: input.headSha,
       evidenceRef,

@@ -4,8 +4,10 @@ import type { ActionSuccessorLease } from './action-successor-state-machine.js';
 export interface RecoverActiveLocalReviewVerdictInput {
   expectedGeneration: number;
   reviewerCatId: string;
-  predecessorCatId: string;
-  predecessorThreadId: string;
+  /** Required for structured_transfer; must be absent for existing_standing. */
+  predecessorCatId?: string;
+  /** Required for structured_transfer; must be absent for existing_standing. */
+  predecessorThreadId?: string;
   tenantScope: string;
   headSha: string;
   evidenceRef: string;
@@ -44,7 +46,7 @@ export function recoverActiveLocalReviewVerdict(
     current.actionFamily !== 'review' ||
     current.successorSlot !== 'reviewer' ||
     current.mode !== 'single' ||
-    current.claimOrigin !== 'structured_transfer' ||
+    (current.claimOrigin !== 'structured_transfer' && current.claimOrigin !== 'existing_standing') ||
     current.terminalPredicate?.kind !== 'review_delivered' ||
     current.terminalPredicate.headSha !== input.headSha
   ) {
@@ -53,12 +55,21 @@ export function recoverActiveLocalReviewVerdict(
   if (current.holderCatIds.length !== 1 || current.holderCatIds[0] !== input.reviewerCatId) {
     return { outcome: 'holder_mismatch', lease: current };
   }
-  if (
-    current.predecessorCatId !== input.predecessorCatId ||
-    current.predecessorThreadId !== input.predecessorThreadId ||
-    current.tenantScope !== input.tenantScope
-  ) {
+  if (current.tenantScope !== input.tenantScope) {
     return { outcome: 'predecessor_mismatch', lease: current };
+  }
+  if (current.claimOrigin === 'structured_transfer') {
+    if (
+      current.predecessorCatId !== input.predecessorCatId ||
+      current.predecessorThreadId !== input.predecessorThreadId
+    ) {
+      return { outcome: 'predecessor_mismatch', lease: current };
+    }
+  } else {
+    // existing_standing: no predecessor route exists; caller must not claim one
+    if (input.predecessorCatId !== undefined || input.predecessorThreadId !== undefined) {
+      return { outcome: 'predecessor_mismatch', lease: current };
+    }
   }
   if (Object.keys(current.holderOutcomes).length > 0) return { outcome: 'output_present', lease: current };
   if (Object.keys(current.completionCandidates).length > 0) return { outcome: 'candidate_present', lease: current };

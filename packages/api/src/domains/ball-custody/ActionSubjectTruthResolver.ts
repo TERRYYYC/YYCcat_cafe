@@ -84,6 +84,7 @@ export interface ActionCompletionLeaseContext {
   predecessorCatId?: string;
   predecessorThreadId?: string;
   tenantScope: string;
+  claimOrigin: import('./action-successor-state-machine.js').ActionSuccessorClaimOrigin;
 }
 
 function taskIdFromSubject(subjectRef: string): string | null {
@@ -228,6 +229,7 @@ export class ActionSubjectTruthResolver {
             predecessorCatId: context.predecessorCatId,
             predecessorThreadId: context.predecessorThreadId,
             tenantScope: context.tenantScope,
+            claimOrigin: context.claimOrigin,
           });
           if (localResolution.status === 'verified') {
             const freshness = await this.resolveFreshness(predicate);

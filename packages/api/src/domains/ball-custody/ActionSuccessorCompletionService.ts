@@ -66,6 +66,7 @@ export class ActionSuccessorCompletionService {
       predecessorCatId: candidate.lease.predecessorCatId,
       predecessorThreadId: candidate.lease.predecessorThreadId,
       tenantScope: candidate.lease.tenantScope,
+      claimOrigin: candidate.lease.claimOrigin,
     });
     if (verdict.status !== 'verified') return { outcome: verdict.status, reason: verdict.reason };
 

@@ -167,6 +167,7 @@ it('resolves and commits the exact holder candidate snapshot', async () => {
         predecessorCatId: 'codex-sol',
         predecessorThreadId: 'thread-source',
         tenantScope: 'user-1',
+        claimOrigin: 'structured_transfer',
       });
       return {
         status: 'verified',

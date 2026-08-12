@@ -40,7 +40,8 @@ export function parseActionSuccessorLease(raw: string | null): ActionSuccessorLe
   );
   const base = {
     ...lease,
-    claimOrigin: lease.claimOrigin ?? 'structured_transfer',
+    claimOrigin: lease.claimOrigin
+      ?? ((lease.predecessorCatId || lease.predecessorThreadId) ? 'structured_transfer' : 'existing_standing'),
     holderThreadId: lease.holderThreadId ?? 'legacy:unknown',
     issuerStandingEvidenceRef: lease.issuerStandingEvidenceRef ?? lease.evidenceRefs[0] ?? 'legacy:unknown',
     completionCandidates,
