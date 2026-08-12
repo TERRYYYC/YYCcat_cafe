@@ -41,7 +41,7 @@ class FakePublicationStore {
   }
 }
 
-function appendOrigin(messageStore) {
+function appendOrigin(messageStore, authorOverrides = {}) {
   messageStore.append({
     userId: ownerUserId,
     catId: null,
@@ -49,6 +49,7 @@ function appendOrigin(messageStore) {
     mentions: [],
     timestamp: 1_721_111_110_000,
     threadId: originRef.threadId,
+    ...authorOverrides,
   });
   const stored = messageStore.getByThread(originRef.threadId, 1)[0];
   stored.id = originRef.messageId;
@@ -76,9 +77,9 @@ function makeDraft(overrides = {}) {
   };
 }
 
-function makeHarness() {
+function makeHarness(originAuthorOverrides = {}) {
   const messageStore = new MessageStore();
-  appendOrigin(messageStore);
+  appendOrigin(messageStore, originAuthorOverrides);
   const broadcasts = [];
   const userEvents = [];
   const socketManager = {
@@ -100,6 +101,54 @@ function findApprovalCard(messageStore) {
 }
 
 describe('ApprovalIngress', () => {
+  // F167 — a session-handoff proposal anchors on the message that triggered the
+  // invocation, and for a long-running session that message IS the scheduler's
+  // wake row ("持球唤醒"), persisted under the `scheduler` system pseudo-user with
+  // `catId: null`. A bare `origin.userId !== ownerUserId` check therefore rejected
+  // exactly the sessions most in need of a handoff: every attempt driven by a
+  // timer wake failed with "Approval origin message owner mismatch", while the
+  // same proposal from an A2A-triggered turn (userId = the real owner) succeeded.
+  //
+  // The cross-user protection does not live in this comparison — the preceding
+  // threadId assertion already pins the origin to the caller's own thread. What
+  // this one adds is a rule about WHO may author a row inside that thread, and a
+  // system pseudo-user speaking in your own thread is not another tenant.
+  it('accepts a scheduler-authored origin in the owner thread', async () => {
+    const harness = makeHarness({ userId: 'scheduler', catId: null });
+    const store = new FakePublicationStore();
+
+    const envelope = await harness.ingress.publish(makeDraft(), store);
+
+    assert.equal(store.publication.state, 'anchored');
+    assert.equal(envelope.approvalCardRef.threadId, 'source-thread');
+  });
+
+  // The exemption must not become a hole. A different HUMAN owner is a genuine
+  // cross-tenant anchor and stays rejected — without this, the fix above would be
+  // indistinguishable from deleting the check.
+  it('still rejects an origin authored by another human user', async () => {
+    const harness = makeHarness({ userId: 'user-2', catId: null });
+    const store = new FakePublicationStore();
+
+    await assert.rejects(
+      () => harness.ingress.publish(makeDraft(), store),
+      /Approval origin message owner mismatch/,
+    );
+  });
+
+  // isSystemUserMessage requires BOTH a system userId AND a system/null catId, so
+  // a cat-authored row wearing a system userId is not a system message. Pinning it
+  // here keeps the exemption tied to that predicate rather than to the userId alone.
+  it('rejects a system userId carried by a cat-authored message', async () => {
+    const harness = makeHarness({ userId: 'scheduler', catId: 'codex-sol' });
+    const store = new FakePublicationStore();
+
+    await assert.rejects(
+      () => harness.ingress.publish(makeDraft(), store),
+      /Approval origin message owner mismatch/,
+    );
+  });
+
   it('persists one card, commits its exact envelope, then broadcasts', async () => {
     const harness = makeHarness();
     const store = new FakePublicationStore();

@@ -2,6 +2,7 @@ import type { ApprovalEnvelope, ApprovalOriginRef, ApprovalProducerId, CatId, Ri
 import { approvalProducerMeta, validateApprovalEnvelope, validateApprovalOriginRef } from '@cat-cafe/shared';
 import type { SocketManager } from '../../infrastructure/websocket/index.js';
 import type { IMessageStore, StoredMessage } from '../cats/services/stores/ports/MessageStore.js';
+import { isSystemUserMessage } from '../cats/services/stores/visibility.js';
 import { approvalCardIdempotencyKey, buildApprovalCardBlock } from './buildApprovalCardBlock.js';
 import type { ApprovalPublicationStore } from './ports/ApprovalPublicationStore.js';
 
@@ -218,7 +219,27 @@ export class ApprovalIngress {
     const origin = await this.deps.messageStore.getById(draft.originRef.messageId);
     if (!origin || origin.deletedAt || origin._tombstone) throw new Error('Approval origin message not found');
     if (origin.threadId !== draft.originRef.threadId) throw new Error('Approval origin message thread mismatch');
-    if (origin.userId !== draft.ownerUserId) throw new Error('Approval origin message owner mismatch');
+    // Cross-tenant isolation is the assertion ABOVE: the origin must live in the
+    // caller's own thread. What remains here is a narrower question — who may have
+    // authored a row inside that thread — and a system pseudo-user speaking in your
+    // own thread is not another tenant.
+    //
+    // Without the exemption this rejected precisely the sessions that need it most.
+    // A session-handoff proposal anchors on the message that triggered the
+    // invocation, and for any long-running session that message IS the scheduler's
+    // wake row ("持球唤醒"), persisted as userId='scheduler' / catId=null. So a
+    // timer-woken cat could never hand off, while the same proposal from an
+    // A2A-triggered turn (authored by the real owner) went through — the failure
+    // was invisible except as a 500 with no actionable text.
+    //
+    // isSystemUserMessage is the store layer's existing predicate for exactly this
+    // distinction, and it is deliberately reused rather than re-derived here: it
+    // requires BOTH a system userId AND a system/null catId, so a cat-authored row
+    // wearing a system userId stays rejected. A second, private definition of "is
+    // this the system" is how the two drift apart.
+    if (origin.userId !== draft.ownerUserId && !isSystemUserMessage(origin)) {
+      throw new Error('Approval origin message owner mismatch');
+    }
   }
 
   private async findPersistedCard(
