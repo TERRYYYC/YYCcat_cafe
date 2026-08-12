@@ -137,18 +137,39 @@ describe('ApprovalIngress', () => {
   // binding, because ApprovalIngress is shared and the argument only ever covered
   // one caller. Without this case the scoping and no scoping are indistinguishable.
   //
-  // Note this case used to pass as an ACCEPT: makeDraft() defaults to F128, so the
-  // first version of this fix exempted a producer that never proved the binding —
-  // and the passing test read as confirmation. Caught in maintainer review of
-  // PR #1347, not by me or by four local review rounds.
+  // F221 is the honest negative: its `sourceMessageId` may be supplied by the
+  // request body and the derive path does not tie it back to the InvocationRecord,
+  // so it really has not established the binding.
+  //
+  // Two review layers landed on this one case. The maintainer (PR #1347) caught that
+  // the exemption was as wide as the shared ingress while the argument covered one
+  // caller. Then @codex-luna (PR #1349) caught that my first negative used F128 —
+  // a producer that DOES bind (record.threadId / record.originTriggerMessageId /
+  // record.userId, verified at the creation site) — so the case was fossilising a
+  // regression of the very 500 this branch exists to fix, and its green read as
+  // proof. A negative case is only evidence if its subject genuinely lacks the
+  // property; picking the wrong subject makes the assertion cosmetic.
   it('rejects a scheduler-authored origin for a producer without the attestation', async () => {
     const harness = makeHarness({ userId: 'scheduler', catId: null });
     const store = new FakePublicationStore();
 
     await assert.rejects(
-      () => harness.ingress.publish(makeDraft({ producerId: 'F128' }), store),
+      () => harness.ingress.publish(makeDraft({ producerId: 'F221' }), store),
       /Approval origin message owner mismatch/,
     );
+  });
+
+  // Regression guard for the producer Luna's audit reclassified: F128 binds, so a
+  // scheduler-authored origin must be ACCEPTED for it. If someone flips F128 back to
+  // `forbidden`, this fails instead of silently restoring the owner-mismatch 500.
+  it('accepts a scheduler-authored origin for F128, whose binding is transitive but record-derived', async () => {
+    const harness = makeHarness({ userId: 'scheduler', catId: null });
+    const store = new FakePublicationStore();
+
+    const envelope = await harness.ingress.publish(makeDraft({ producerId: 'F128' }), store);
+
+    assert.equal(store.publication.state, 'anchored');
+    assert.equal(envelope.approvalCardRef.threadId, 'source-thread');
   });
 
   // The exemption must not become a hole. A different HUMAN owner is a genuine

@@ -239,11 +239,18 @@ export class ApprovalIngress {
     // as wide as the shared ingress while the argument for it covered one caller
     // (maintainer review, PR #1347 gate 2).
     //
-    // So (1) is now DECLARED per producer and ENFORCED here, not assumed:
-    // `systemOriginExemption: 'server_attested'` in the producer catalog is a
-    // claim that this producer's adapter binds originRef + ownerUserId to an
-    // authenticated InvocationRecord. It is a required field, so a new producer
-    // cannot inherit the exemption by omission — it must say so and be reviewed.
+    // So the exemption is no longer global: it is gated per producer by
+    // `systemOriginExemption` in the producer catalog, and a required field means a
+    // new producer cannot inherit it by omission.
+    //
+    // Be precise about what that gate is (@codex-luna, PR #1349 P2). It is a
+    // CAPABILITY GATE over a DECLARATION — the catalog says which producers claim
+    // the binding of (1). It is NOT a runtime proof that the named adapter really
+    // binds: this class cannot verify that, and a wrong `server_attested` value
+    // would not be caught here. The proof lives in the per-entry audit trail plus
+    // route-level coverage. So the gate narrows the blast radius from "every
+    // message-origin producer" to "the ones someone audited and signed for" — which
+    // is a real reduction, not a verification.
     //
     // Given (1) AND (2), what the comparison below still decides is narrower: who
     // may have authored a row inside an already-verified thread — and a system
