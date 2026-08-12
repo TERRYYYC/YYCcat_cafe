@@ -219,24 +219,28 @@ export class ApprovalIngress {
     const origin = await this.deps.messageStore.getById(draft.originRef.messageId);
     if (!origin || origin.deletedAt || origin._tombstone) throw new Error('Approval origin message not found');
     if (origin.threadId !== draft.originRef.threadId) throw new Error('Approval origin message thread mismatch');
-    // Cross-tenant isolation rests on the assertion ABOVE: the origin must live in
-    // the thread the draft names. What remains here is a narrower question — who
-    // may have authored a row inside that thread — and a system pseudo-user
-    // speaking in your own thread is not another tenant.
+    // Cross-tenant isolation here is a CONJUNCTION of two parts, and neither part
+    // is sufficient on its own (@codex-luna's review, rounds 2-4):
     //
-    // State that precisely (@codex-luna's review): the CALLER invariant is the
-    // AUTHENTICATED ORIGIN BINDING, not the threadId comparison. This class does
-    // perform that comparison; what it cannot verify is whether the originRef it
-    // was handed — threadId, and the ownerUserId compared below — came from an
-    // authenticated record at all. On the F225 session-handoff path they do: that
-    // producer derives them from an authenticated InvocationRecord, and a request
-    // body cannot rewrite them.
+    //   (1) CALLER: originRef.threadId / .messageId and ownerUserId must be bound
+    //       to an authenticated record. This class CANNOT verify that binding.
+    //   (2) THIS CLASS: the assertion above checks that the origin message really
+    //       does live in the thread the draft names.
     //
-    // ApprovalIngress serves several producers, so that is a property of the F225
+    // (2) alone proves nothing about tenancy — a draft naming a thread of its own
+    // choosing satisfies the comparison trivially. It carries weight only because
+    // (1) fixes which thread may be named. On the F225 session-handoff path (1)
+    // holds: that producer derives all three from an authenticated
+    // InvocationRecord, and a request body cannot rewrite them.
+    //
+    // ApprovalIngress serves several producers, so (1) is a property of the F225
     // path and NOT of this class. Any producer deriving a draft from untrusted
-    // input must itself establish and validate an authenticated
-    // owner/thread/origin binding before calling this ingress; the exemption below
-    // assumes that binding rather than proving it.
+    // input must itself establish and validate that binding before calling this
+    // ingress; the exemption below assumes (1) rather than proving it.
+    //
+    // Given (1) AND (2), what the comparison below still decides is narrower: who
+    // may have authored a row inside an already-verified thread — and a system
+    // pseudo-user speaking in that thread is not another tenant.
     //
     // Without the exemption this rejected precisely the sessions that need it most.
     // A session-handoff proposal anchors on the message that triggered the
