@@ -324,7 +324,7 @@ describe('prepareOpenCodeAcpSpawnConfig', () => {
         'claude-opus-4-6': {
           id: 'claude-opus-4-6-20260101',
           name: 'claude-opus-4-6',
-          limit: { context: 128_000 },
+          limit: { context: 128_000, output: 32_000 },
         },
       });
       assert.deepEqual(prepared.runtimeConfigSummary.providerSummary.anthropic.modelMappings, {
@@ -1068,5 +1068,102 @@ describe('writeOpenCodeRuntimeConfig', () => {
       rmSync(runtimeRoot, { recursive: true, force: true });
       rmSync(projectDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── OpenCode ≥1.18.16 limit.output contract ────────────────────────────────
+// Regression guard for the silent-cat outage: OpenCode rejects any model entry
+// that carries `limit.context` without `limit.output`, exiting 1 before it ever
+// speaks. Reproduced against the real binary (opencode 1.18.16):
+//   $ OPENCODE_CONFIG=<ctx-only>.json opencode models
+//   Error: Configuration is invalid ...
+//   ↳ Missing key provider.zhipu.models.glm-5.2.limit.output
+describe('generateOpenCodeRuntimeConfig — limit.output contract', () => {
+  test('emits limit.output whenever limit.context is written', () => {
+    const config = generateOpenCodeRuntimeConfig({
+      providerName: 'zhipu',
+      models: ['glm-5.2'],
+      defaultModel: 'glm-5.2',
+      contextWindowTokens: 1_000_000,
+      hasBaseUrl: true,
+    });
+
+    const entry = config.provider.zhipu.models['glm-5.2'];
+    assert.ok(entry.limit, 'a resolved context window must produce a limit block');
+    assert.equal(entry.limit.context, 1_000_000);
+    assert.ok(
+      typeof entry.limit.output === 'number' && entry.limit.output > 0,
+      'limit.output is mandatory in OpenCode >=1.18.16 — omitting it kills the CLI at config parse',
+    );
+  });
+
+  test('defaults limit.output to 32000 so OpenCode budgets are not silently halved', () => {
+    // OpenCode caps request output at `min(limit.output, 32_000)` and derives the
+    // reasoning budget from the same field (`min(31_999, limit.output - 1)`).
+    // Anything below 32_000 quietly shrinks both; every model our OpenCode cats
+    // run supports far more (GLM-5.2 131_072, DeepSeek V4 384_000).
+    const config = generateOpenCodeRuntimeConfig({
+      providerName: 'deepseek',
+      models: ['deepseek-v4-pro'],
+      contextWindowTokens: 1_000_000,
+      hasBaseUrl: true,
+    });
+
+    assert.equal(config.provider.deepseek.models['deepseek-v4-pro'].limit.output, 32_000);
+  });
+
+  test('honours an explicit per-breed outputTokens override', () => {
+    const config = generateOpenCodeRuntimeConfig({
+      providerName: 'deepseek',
+      models: ['deepseek-v4-pro'],
+      contextWindowTokens: 1_000_000,
+      outputTokens: 8_192,
+      hasBaseUrl: true,
+    });
+
+    assert.equal(config.provider.deepseek.models['deepseek-v4-pro'].limit.output, 8_192);
+  });
+
+  test('writes no limit block at all when the context window is unknown', () => {
+    const config = generateOpenCodeRuntimeConfig({
+      providerName: 'deepseek',
+      models: ['deepseek-v4-pro'],
+      hasBaseUrl: true,
+    });
+
+    assert.equal(config.provider.deepseek.models['deepseek-v4-pro'].limit, undefined);
+  });
+
+  test('every context-window catalog entry yields an OpenCode-valid limit block', () => {
+    // Catalog and config generator must stay in lockstep: any model that resolves
+    // a window here becomes a `limit` block on spawn, so a missing `output` in the
+    // generator silences that cat.
+    for (const [model, windowTokens] of Object.entries(CONTEXT_WINDOW_SIZES)) {
+      const resolved = resolveEffectiveOpenCodeModel(undefined, model);
+      const config = generateOpenCodeRuntimeConfig({
+        providerName: resolved.providerName,
+        models: [model],
+        contextWindowTokens: windowTokens,
+        hasBaseUrl: true,
+      });
+      const providerKey = Object.keys(config.provider)[0];
+      const { limit } = config.provider[providerKey].models[model];
+      assert.ok(limit && limit.context > 0 && limit.output > 0, `${model} must emit context+output limits`);
+    }
+  });
+});
+
+describe('CONTEXT_WINDOW_SIZES — DeepSeek / GPT coverage', () => {
+  // Provenance: GPT values from Codex models_cache.json (context_window, fetched
+  // 2026-08-14); DeepSeek values from the models.dev catalog OpenCode itself ships.
+  test('covers the GPT models our Codex cats run (272K)', () => {
+    for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']) {
+      assert.equal(CONTEXT_WINDOW_SIZES[model], 272_000, `${model} should resolve its real window`);
+    }
+  });
+
+  test('covers DeepSeek V4 (1M)', () => {
+    assert.equal(CONTEXT_WINDOW_SIZES['deepseek-v4-flash'], 1_000_000);
+    assert.equal(CONTEXT_WINDOW_SIZES['deepseek-v4-pro'], 1_000_000);
   });
 });

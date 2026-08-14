@@ -21,7 +21,15 @@ export const CONTEXT_WINDOW_SIZES: Record<string, number> = {
   // stale CLIs (≤2.1.177) mis-REPORT it as 200K, which this table alone
   // cannot fix (CLI report outranks the fallback table).
   'claude-fable-5': 1_000_000,
-  // Codex/GPT
+  // Codex/GPT — values mirror `context_window` in Codex's own models_cache.json
+  // (~/.codex/models_cache.json, client 0.147.0). Note gpt-5.4 advertises a 1M
+  // `max_context_window` but defaults to 272K, and the default is what the CLI runs.
+  'gpt-5.6-sol': 272_000,
+  'gpt-5.6-terra': 272_000,
+  'gpt-5.6-luna': 272_000,
+  'gpt-5.5': 272_000,
+  'gpt-5.4': 272_000,
+  'gpt-5.4-mini': 272_000,
   'gpt-5.3': 128_000,
   'gpt-5.2': 128_000,
   'gpt-5.1-codex': 400_000,
@@ -33,6 +41,10 @@ export const CONTEXT_WINDOW_SIZES: Record<string, number> = {
   'glm-5.2': 1_000_000,
   'glm-5.2[1m]': 1_000_000,
   'minimax-m3': 1_000_000,
+  // DeepSeek — from the models.dev catalog OpenCode itself ships
+  // (~/.cache/opencode/models.json: context 1_000_000, output 384_000).
+  'deepseek-v4-flash': 1_000_000,
+  'deepseek-v4-pro': 1_000_000,
   // Gemini
   'gemini-2.5-pro': 1_000_000,
   'gemini-2.5-flash': 1_000_000,

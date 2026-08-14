@@ -22,7 +22,7 @@ interface OpenCodeConfigOptions {
 
 type OpenCodeProviderConfig = {
   npm?: string;
-  models?: Record<string, { id?: string; name: string; limit?: { context: number } }>;
+  models?: Record<string, { id?: string; name: string; limit?: { context: number; output: number } }>;
   options: {
     apiKey?: string;
     baseURL?: string;
@@ -87,6 +87,16 @@ export const OC_API_KEY_ENV = 'CAT_CAFE_OC_API_KEY';
 export const OC_BASE_URL_ENV = 'CAT_CAFE_OC_BASE_URL';
 
 /**
+ * OpenCode >=1.18.16 rejects any model entry with `limit.context` but no
+ * `limit.output` ("Missing key provider.*.models.*.limit.output") and exits 1
+ * before emitting a token — the cat goes silent. It also drives the request
+ * output cap `min(output, 32_000)` and the reasoning budget `min(31_999, output
+ * - 1)`, so 32_000 (OpenCode's own ceiling) is the smallest non-degrading default;
+ * lower values silently halve both. A breed needing less passes `outputTokens`.
+ */
+const DEFAULT_OUTPUT_TOKENS = 32_000;
+
+/**
  * OpenCode API type determines which AI SDK npm adapter to use.
  * - 'openai'           → @ai-sdk/openai-compatible  (chat/completions, default for custom providers)
  * - 'openai-responses'  → @ai-sdk/openai             (responses API, for official OpenAI endpoints)
@@ -124,6 +134,8 @@ export interface OpenCodeRuntimeConfigOptions {
   defaultModel?: string;
   /** #1208: invocation-owned window applied to every registered model. */
   contextWindowTokens?: number;
+  /** Output cap paired with `contextWindowTokens`; defaults to DEFAULT_OUTPUT_TOKENS. */
+  outputTokens?: number;
   apiType?: OpenCodeApiType;
   hasBaseUrl?: boolean;
   /**
@@ -212,6 +224,7 @@ export function generateOpenCodeRuntimeConfig(options: OpenCodeRuntimeConfigOpti
     modelAliases,
     defaultModel,
     contextWindowTokens,
+    outputTokens,
     apiType = 'openai',
     hasBaseUrl = false,
     omitProviderAuth = false,
@@ -227,7 +240,8 @@ export function generateOpenCodeRuntimeConfig(options: OpenCodeRuntimeConfigOpti
 
   const configName = safeProviderName(providerName);
 
-  const modelsMap: Record<string, { id?: string; name: string; limit?: { context: number } }> = {};
+  const effectiveOutputTokens = outputTokens && outputTokens > 0 ? outputTokens : DEFAULT_OUTPUT_TOKENS;
+  const modelsMap: Record<string, { id?: string; name: string; limit?: { context: number; output: number } }> = {};
   const modelsToRegister = defaultModel ? [...models, defaultModel] : [...models];
   for (const rawModel of modelsToRegister) {
     const modelName = stripOwnProviderPrefix(rawModel, providerName);
@@ -237,7 +251,9 @@ export function generateOpenCodeRuntimeConfig(options: OpenCodeRuntimeConfigOpti
     modelsMap[modelName] = {
       ...(upstreamId ? { id: upstreamId } : {}),
       name: modelName,
-      ...(contextWindowTokens && contextWindowTokens > 0 ? { limit: { context: contextWindowTokens } } : {}),
+      ...(contextWindowTokens && contextWindowTokens > 0
+        ? { limit: { context: contextWindowTokens, output: effectiveOutputTokens } }
+        : {}),
     };
   }
 
