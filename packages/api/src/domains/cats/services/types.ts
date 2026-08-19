@@ -17,6 +17,7 @@ import type { Span } from '@opentelemetry/api';
 import type { CliDiagnostics } from '../../../utils/cli-diagnostics.js';
 import type { CliSpawnOptions } from '../../../utils/cli-types.js';
 import type { AntigravitySessionLifecycle } from './agents/providers/antigravity/antigravity-runtime-lifecycle.js';
+import type { CodexSessionReplacementProvenance } from './runtime-session/CodexSessionReplacementProvenance.js';
 import type { TurnExecutionMessageProjection } from './stores/ports/TurnExecutionStore.js';
 
 /** F8: Unified token usage type across all three cats.
@@ -200,6 +201,8 @@ export interface AgentMessage {
   ephemeralSession?: boolean;
   /** F211 A2: provider runtime lifecycle facts used by invocation to seal/create SessionRecords. */
   sessionLifecycle?: AntigravitySessionLifecycle;
+  /** F118/F211: explicit cause and evidence for a Codex native-session replacement. */
+  sessionReplacement?: CodexSessionReplacementProvenance;
   /** Tool name (for 'tool_use' and 'tool_result' types; required by F153 Phase J AC-J1) */
   toolName?: string;
   /** Tool input parameters (for 'tool_use' type) */
@@ -277,6 +280,9 @@ export interface AgentMessage {
   /** Typed F167 Phase T proof that this exact child consumed a terminal
    *  coordination wake and correctly produced no reply. */
   turnCustodyTerminalWitness?: QueueTerminalConsumptionWitness;
+  /** Exact per-source proofs when one child adopted multiple queued custody
+   *  obligations through prompt exposure before provider startup. */
+  turnCustodyTerminalWitnesses?: readonly QueueTerminalConsumptionWitness[];
   /** F153-F: OTel span context for trace persistence (written to message extra.tracing) */
   tracing?: { traceId: string; spanId: string; parentSpanId?: string };
   /** F070: Structured error code for recoverable failures (e.g. GOVERNANCE_BOOTSTRAP_REQUIRED) */
@@ -358,6 +364,68 @@ export interface AgentContextCapability {
   readonly nativeCompressionControl: boolean;
   readonly observesCompression: boolean;
   readonly reason: string;
+}
+
+/** F296 B0: concrete provider transport identity, independent of route/origin. */
+export type ProviderCarrier =
+  | { readonly provider: 'claude'; readonly carrier: 'print_sdk' | 'bg_daemon' | 'interactive_pty' | 'api_key' }
+  | { readonly provider: 'codex'; readonly carrier: 'exec_json' | 'app_server' }
+  | { readonly provider: 'gemini'; readonly carrier: 'gemini_cli' | 'antigravity_adapter' }
+  | { readonly provider: 'antigravity'; readonly carrier: 'cdp_bridge' }
+  | { readonly provider: 'kimi'; readonly carrier: 'stream_json' }
+  | { readonly provider: 'opencode'; readonly carrier: 'run_json' }
+  | { readonly provider: 'acp'; readonly carrier: 'acp'; readonly backend: 'opencode' | 'unknown' }
+  | { readonly provider: 'catagent'; readonly carrier: 'direct_api' }
+  | { readonly provider: 'a2a'; readonly carrier: 'remote' }
+  | {
+      readonly provider: 'unknown';
+      readonly carrier: 'unknown';
+      readonly rawProvider?: string;
+      readonly rawCarrier?: string;
+    };
+
+export type InvocationOrigin = 'interactive' | 'headless' | 'scheduled' | 'connector' | 'cloud' | 'unknown';
+export type RouteTopology = 'serial' | 'parallel' | 'independent';
+
+export interface ContextCoordinate {
+  readonly providerCarrier: ProviderCarrier;
+  readonly invocationOrigin: InvocationOrigin;
+  readonly routeTopology: RouteTopology;
+}
+
+export type FreshReason = 'no_prior_session' | 'resume_rejected' | 'resume_failed' | 'carrier_forces_fresh';
+export type UnknownReason = 'carrier_unsupported' | 'signal_unavailable' | 'binding_mismatch';
+
+export type ContinuityDisposition =
+  | {
+      readonly state: 'fresh';
+      readonly reason: FreshReason;
+      readonly evidenceRef: string;
+      readonly runtimeSessionId?: string;
+    }
+  | {
+      readonly state: 'resumed';
+      readonly reason: 'resume_confirmed';
+      readonly evidenceRef: string;
+      readonly runtimeSessionId: string;
+    }
+  | {
+      readonly state: 'replaced';
+      readonly reason: 'runtime_replaced';
+      readonly evidenceRef: string;
+      readonly previousRuntimeSessionId?: string;
+      readonly runtimeSessionId: string;
+    }
+  | {
+      readonly state: 'unknown';
+      readonly reason: UnknownReason;
+      readonly evidenceRef: string;
+    };
+
+export interface ContextContinuityHandshake {
+  readonly coordinate: ContextCoordinate;
+  readonly disposition: ContinuityDisposition;
+  readonly contextMode: 'cold' | 'hot';
 }
 
 /** The invocation-owned capacity snapshot passed to provider-native controls. */

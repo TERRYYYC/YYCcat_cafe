@@ -5,12 +5,13 @@ export const HOST_BROKER_SCHEMA_VERSION = 1 as const;
 export type BrokerSessionPhase = 'transport_connected' | 'host_bound' | 'active' | 'draining' | 'closed';
 export type BrokerRuntimeLeaseState = 'pending' | 'live' | 'expired' | 'revoked' | 'closed';
 export type BrokerCallPhase = 'claimed' | 'dispatched' | 'settled_success' | 'settled_error';
+export type BrokerTransportKind = 'builtin-loopback' | 'stdio';
 
 export interface BrokerSessionRecord {
   readonly connectionId: string;
   readonly brokerSessionId: string;
   readonly runtimeLeaseId: string;
-  readonly transportKind: 'builtin-loopback';
+  readonly transportKind: BrokerTransportKind;
   readonly pluginInstanceId: string;
   readonly pluginId: string;
   readonly packageDigest: string;
@@ -119,5 +120,6 @@ export interface BrokerMethodHandler<Input = unknown, Result = unknown> {
   dispatch(context: BrokerCallContext, input: Input): Promise<Result>;
   lookupSettlement(context: BrokerCallContext, input: Input): Promise<Result | null>;
   serializePreEffectError(error: unknown): BrokerCallError | null;
+  canRetrySettledErrorAfterAuthorityChange?(error: BrokerCallError): boolean;
   restoreSettledError(error: BrokerCallError): Error;
 }
