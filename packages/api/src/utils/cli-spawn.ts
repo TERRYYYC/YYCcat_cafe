@@ -909,6 +909,7 @@ export async function* spawnCli(
         rawText,
         structuredErrorText: structuredErrorTexts.filter(Boolean).join('\n'),
         stderrEmpty: stderrTrimLen === 0,
+        ...(options.managedArgvFlags ? { managedArgvFlags: options.managedArgvFlags } : {}),
         debugRef: {
           command: options.command,
           exitCode,
@@ -996,6 +997,7 @@ export async function* spawnCli(
         rawText,
         structuredErrorText: structuredErrorTexts.filter(Boolean).join('\n'),
         stderrEmpty: timeoutStderrTrimLen === 0,
+        ...(options.managedArgvFlags ? { managedArgvFlags: options.managedArgvFlags } : {}),
         debugRef: {
           command: options.command,
           signal: null,

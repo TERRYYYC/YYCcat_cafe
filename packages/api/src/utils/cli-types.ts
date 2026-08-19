@@ -16,6 +16,12 @@ export interface CliSpawnOptions {
   command: string;
   /** Arguments to pass to the CLI */
   args: readonly string[];
+  /**
+   * Exact flag names injected by the harness itself for this invocation.
+   * Never populate this from operator cliConfigArgs: diagnostics use it as
+   * provenance before attributing an argv rejection to harness/CLI drift.
+   */
+  managedArgvFlags?: readonly string[];
   /** stdout parser mode. Defaults to NDJSON for existing CLI providers. */
   outputMode?: 'ndjson' | 'plainText';
   /** Working directory for the process */

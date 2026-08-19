@@ -146,16 +146,18 @@ export const CLASSIFIER_PATTERNS: Array<{ code: CliErrorReasonCode; regex: RegEx
   // lands, auto-filing an issue against ourselves for someone's typo.
   //
   // This reasonCode means specifically: MANAGED argv (flags the harness itself builds)
-  // drifted from the installed CLI version. So the pattern is anchored to the managed
-  // system-prompt flags, not to flag-rejection in general. A generic user-flag rejection
-  // needs its own neutral reasonCode/hint — deliberately not invented here without a
-  // witness (LL-059), and called out in the PR body as an explicit gap.
+  // drifted from the installed CLI version. Only the exact `unknown option '--agent-file'`
+  // witness is admitted, and cli-diagnostics additionally requires `managedArgvFlags`
+  // provenance from the invocation builder. The `Cannot combine` witness is deliberately
+  // excluded because stderr cannot prove that both conflicting flags were harness-owned.
+  // A generic user-flag rejection needs its own neutral reasonCode/hint — deliberately not
+  // invented here without a witness (LL-059).
   //
   // Both phrases are highly specific, so ordering is not load-bearing; kept above the broad
   // AC-A4 keyword block for provenance clarity.
   {
     code: 'incompatible_cli_arguments',
-    regex: /(?:unknown option|Cannot combine)\s+['"`]?--agent(?:-file)?\b/i,
+    regex: /unknown option\s+['"`]?--agent-file(?=['"`\s]|$)/i,
   },
   // New 7 (AC-A4) — ordered most-specific first to avoid mis-classification
   {

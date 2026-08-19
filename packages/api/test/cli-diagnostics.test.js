@@ -23,29 +23,23 @@ test('AC-A5: unknown stderr → sanitized safeExcerpt (#857), publicSummary fall
 });
 
 // clowder-ai#1324 / #848: the harness's argv and the installed CLI version drift apart.
-// Two witnessed shapes from the SAME disease, 76 events over 2026-08-06..08-10:
-//   48x  error: unknown option '--agent-file'                    (kimi-code lacked the flag)
-//   28x  error: Cannot combine --agent/--agent-file with --session/--continue
-//                                                                 (kimi-code >=0.30 added validation)
-// Both fell through to "未识别的 CLI 错误" + a pointless transient retry. LL-059 discipline:
-// these two regexes come from logged witnesses only — no invented parser variants.
-test('#1324: CLI argv/version incompatibility classifies instead of falling through to unknown', () => {
-  const unknownOption = "error: unknown option '--agent-file'";
-  const cannotCombine =
-    'error: Cannot combine --agent/--agent-file with --session/--continue: the agent is bound at ' +
-    'session creation and the bound agent is restored automatically on resume.';
-
-  for (const raw of [unknownOption, cannotCombine]) {
-    const d = buildCliDiagnostics({ rawText: raw, debugRef: baseRef });
-    assert.strictEqual(d.reasonCode, 'incompatible_cli_arguments', `must classify: ${raw.slice(0, 40)}`);
-    assert.doesNotMatch(d.publicSummary, /未识别/, 'a diagnosable argv error must not read as "unknown"');
-    // KD-1: reasonCode is defined, so the excerpt is admitted through the existing whitelist.
-    assert.ok(d.safeExcerpt, 'classified reasonCode admits safeExcerpt');
-    assert.strictEqual(d.excerptSource, 'classifier');
-  }
+// Admit only the exact 48x `unknown option '--agent-file'` witness with managed-argv
+// provenance. The 28x `Cannot combine` witness stays unknown because text cannot prove
+// that both conflicting flags were harness-owned.
+test('#1324: exact managed --agent-file rejection classifies instead of falling through to unknown', () => {
+  const rawText = "error: unknown option '--agent-file'";
+  const d = buildCliDiagnostics({
+    rawText,
+    debugRef: baseRef,
+    managedArgvFlags: ['--agent-file'],
+  });
+  assert.strictEqual(d.reasonCode, 'incompatible_cli_arguments');
+  assert.doesNotMatch(d.publicSummary, /未识别/, 'a diagnosable argv error must not read as "unknown"');
+  // KD-1: reasonCode is defined, so the excerpt is admitted through the existing whitelist.
+  assert.ok(d.safeExcerpt, 'classified reasonCode admits safeExcerpt');
+  assert.strictEqual(d.excerptSource, 'classifier');
 
   // AC-A9 red line: raw stderr must never reach publicSummary/publicHint verbatim.
-  const d = buildCliDiagnostics({ rawText: cannotCombine, debugRef: baseRef });
   assert.doesNotMatch(d.publicSummary, /--agent-file/, 'no raw argv text in publicSummary');
   assert.doesNotMatch(d.publicHint, /--agent-file/, 'no raw argv text in publicHint');
 });
@@ -69,6 +63,61 @@ test('#1325: a rejected USER flag must NOT be attributed to harness argv drift',
     'incompatible_cli_arguments',
     'only MANAGED argv (harness-built flags) counts as version drift',
   );
+});
+
+test('#1325: incompatible argv classification requires exact managed-flag provenance', () => {
+  const managed = buildCliDiagnostics({
+    rawText: "error: unknown option '--agent-file'",
+    debugRef: { ...baseRef, command: '/usr/local/bin/kimi' },
+    managedArgvFlags: ['--agent-file'],
+  });
+  assert.strictEqual(managed.reasonCode, 'incompatible_cli_arguments');
+
+  for (const [rawText, command] of [
+    ["error: unknown option '--agent-file'", 'gemini'],
+    ["error: unknown option '--agent-file'", 'unknown-cli'],
+    ['error: Cannot combine --agent/--agent-file with --session/--continue', 'gemini'],
+  ]) {
+    const operatorOwned = buildCliDiagnostics({ rawText, debugRef: { ...baseRef, command } });
+    assert.notStrictEqual(
+      operatorOwned.reasonCode,
+      'incompatible_cli_arguments',
+      `${command} without managed argv provenance must fail closed`,
+    );
+  }
+});
+
+test('#1325: incompatible argv witness requires an exact token and excludes unprovable shapes', () => {
+  for (const rawText of [
+    "error: unknown option '--agent-file-extra'",
+    "error: unknown option '--agent'",
+    'error: Cannot combine --agent/--agent-file with --session/--continue',
+    'error: Cannot combine --agent-file-extra with --session/--continue',
+  ]) {
+    const d = buildCliDiagnostics({
+      rawText,
+      debugRef: { ...baseRef, command: 'kimi' },
+      managedArgvFlags: ['--agent-file'],
+    });
+    assert.notStrictEqual(d.reasonCode, 'incompatible_cli_arguments', `must not over-match: ${rawText}`);
+  }
+});
+
+test('#1325: classifier safeExcerpt redacts non-HOME Unix paths before public admission', () => {
+  const d = buildCliDiagnostics({
+    rawText: [
+      "error: unknown option '--agent-file'",
+      'loaded config from /srv/cat-cafe/private/secret.toml',
+      'workspace /workspace/team/notes.txt',
+      'windows D:\\work\\team\\secret.json',
+    ].join('\n'),
+    debugRef: { ...baseRef, command: 'kimi' },
+    managedArgvFlags: ['--agent-file'],
+  });
+  assert.strictEqual(d.reasonCode, 'incompatible_cli_arguments');
+  assert.ok(d.safeExcerpt, 'classified error should retain a bounded public excerpt');
+  assert.doesNotMatch(d.safeExcerpt, /\/srv\/cat-cafe|\/workspace\/team|D:\\work\\team/);
+  assert.match(d.safeExcerpt, /\[PATH_REDACTED\]/);
 });
 
 test('AC-A1 + AC-A5: known reasonCode → safeExcerpt filled, publicSummary/Hint reasonable', () => {

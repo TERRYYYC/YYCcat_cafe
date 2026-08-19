@@ -2,7 +2,7 @@
  * F212 Phase A — CLI error diagnostics builder + classifier.
  *
  * Public API:
- *  - `classifyCliError(text)`: text → reasonCode | undefined
+ *  - `classifyCliError(text, context?)`: text + provenance → reasonCode | undefined
  *  - `buildCliDiagnostics({ rawText, debugRef })`: full CliDiagnostics payload
  *
  * Design contract:
@@ -20,14 +20,32 @@ import { sanitizeCliStderr } from './sanitize-cli-stderr.js';
 // folded panel can import the same contract. Re-exported here for existing api callers.
 export type { CliDiagnostics, CliErrorReasonCode };
 
+export interface CliErrorClassificationContext {
+  /** Exact flag names added by the harness for this invocation, never operator args. */
+  managedArgvFlags?: readonly string[];
+}
+
+const UNKNOWN_MANAGED_ARGV_FLAG = /unknown option\s+['"`]?(--agent-file)(?=['"`\s]|$)/i;
+
+function hasManagedArgvProvenance(text: string, context?: CliErrorClassificationContext): boolean {
+  const managed = new Set(context?.managedArgvFlags ?? []);
+  const rejectedFlag = UNKNOWN_MANAGED_ARGV_FLAG.exec(text)?.[1]?.toLowerCase();
+  return rejectedFlag !== undefined && managed.has(rejectedFlag);
+}
+
 /**
  * F212 AC-A4 + AC-A8: classify stderr OR NDJSON stream error text into known reasonCodes.
  * Returns undefined for unknown; callers must surface generic message + never expose raw text.
  */
-export function classifyCliError(text: string): CliErrorReasonCode | undefined {
+export function classifyCliError(
+  text: string,
+  context?: CliErrorClassificationContext,
+): CliErrorReasonCode | undefined {
   if (!text) return undefined;
   for (const { code, regex } of CLASSIFIER_PATTERNS) {
-    if (regex.test(text)) return code;
+    if (!regex.test(text)) continue;
+    if (code === 'incompatible_cli_arguments' && !hasManagedArgvProvenance(text, context)) continue;
+    return code;
   }
   return undefined;
 }
@@ -210,7 +228,7 @@ function truncateEvidenceString(value: string, maxChars: number, additionalHomeP
 function redactNonHomePaths(input: string): string {
   return input
     .replace(/\b[A-Za-z]:\\(?:[^\s"'`<>|]+\\)*[^\s"'`<>|]+/g, '[PATH_REDACTED]')
-    .replace(/(^|[\s"'`(=:[{,])\/(?!tmp\/\[REDACTED\])(?:[^\s"'`<>{}|]+\/)+[^\s"'`<>{}|]+/g, '$1[PATH_REDACTED]');
+    .replace(/(^|[\s"'`(=:[{,])\/(?!\/|tmp\/\[REDACTED\])(?:[^\s"'`<>{}|]+\/)+[^\s"'`<>{}|]+/g, '$1[PATH_REDACTED]');
 }
 
 function truncateSilentEvidenceString(
@@ -232,7 +250,7 @@ function extractSafeExcerpt(
   additionalHomePaths?: readonly string[],
 ): string {
   // KD-2: sanitize entire blob first; truncation happens on sanitized output.
-  const sanitized = sanitizeCliStderr(rawText, childHomeSanitizerOptions(additionalHomePaths));
+  const sanitized = redactNonHomePaths(sanitizeCliStderr(rawText, childHomeSanitizerOptions(additionalHomePaths)));
   const allLines = sanitized.split('\n');
   // Keep meaningful lines (non-empty after trim) but preserve original line content (don't trim away whitespace details).
   const lines = allLines.filter((l) => l.trim().length > 0);
@@ -277,10 +295,13 @@ function maybeExtractSafeExcerpt(args: {
   rawText: string;
   reasonCode: CliErrorReasonCode;
   additionalHomePaths?: readonly string[];
+  classificationContext?: CliErrorClassificationContext;
   requireClassifierMatch: boolean;
 }): string | undefined {
   if (!args.rawText.trim()) return undefined;
-  if (args.requireClassifierMatch && classifyCliError(args.rawText) !== args.reasonCode) return undefined;
+  if (args.requireClassifierMatch && classifyCliError(args.rawText, args.classificationContext) !== args.reasonCode) {
+    return undefined;
+  }
   return extractSafeExcerpt(args.rawText, args.reasonCode, args.additionalHomePaths) || undefined;
 }
 
@@ -338,6 +359,8 @@ export interface CliTimeoutTerminalContext {
 export function buildCliDiagnostics(args: {
   rawText: string;
   debugRef: CliDiagnostics['debugRef'];
+  /** Harness-owned argv flags for this exact invocation; operator args must never enter this list. */
+  managedArgvFlags?: readonly string[];
   /** F212 Phase D (AC-D3): CC structured result error message (errors[] / result fields from a
    *  Claude CLI result error event). Safe to surface even when reasonCode is unknown — it is
    *  CC's own standard wording, NOT raw stderr. */
@@ -374,7 +397,10 @@ export function buildCliDiagnostics(args: {
     };
   }
 
-  const reasonCode = classifyCliError(args.rawText);
+  const classificationContext: CliErrorClassificationContext = {
+    ...(args.managedArgvFlags ? { managedArgvFlags: args.managedArgvFlags } : {}),
+  };
+  const reasonCode = classifyCliError(args.rawText, classificationContext);
   const additionalHomePaths = args.additionalHomePaths;
   const excerptRawText = args.safeExcerptRawText ?? args.rawText;
   const classifierSafeExcerpt = reasonCode
@@ -382,6 +408,7 @@ export function buildCliDiagnostics(args: {
         rawText: excerptRawText,
         reasonCode,
         additionalHomePaths,
+        classificationContext,
         requireClassifierMatch: args.safeExcerptRawText !== undefined,
       })
     : undefined;
