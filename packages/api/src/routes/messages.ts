@@ -44,7 +44,10 @@ import { getThreadLiveInvocations } from '../domains/cats/services/agents/invoca
 import type { InvocationQueue } from '../domains/cats/services/agents/invocation/InvocationQueue.js';
 import type { InvocationRegistry } from '../domains/cats/services/agents/invocation/InvocationRegistry.js';
 import type { InvocationTracker } from '../domains/cats/services/agents/invocation/InvocationTracker.js';
-import { PerCatTerminalDispositionCollector } from '../domains/cats/services/agents/invocation/PerCatTerminalDispositionCollector.js';
+import {
+  isTerminalDispositionEvent,
+  PerCatTerminalDispositionCollector,
+} from '../domains/cats/services/agents/invocation/PerCatTerminalDispositionCollector.js';
 import { createInitialQueuedMessageCustody } from '../domains/cats/services/agents/invocation/QueuedMessageCustodyCoordinator.js';
 import type {
   QueueProcessor,
@@ -1704,7 +1707,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               governanceErrorCode = msg.errorCode;
             }
             terminalDispositions.observe(msg);
-            if ((msg.type === 'done' || msg.type === 'error') && msg.catId) {
+            if (isTerminalDispositionEvent(msg) && msg.catId) {
               opts.invocationTracker?.completeSlot?.(resolvedThreadId, msg.catId, controller);
             }
 
@@ -2206,7 +2209,7 @@ export const messagesRoutes: FastifyPluginAsync<MessagesRoutesOptions> = async (
               });
               intentModeBroadcast = true;
             }
-            if ((msg.type === 'done' || msg.type === 'error') && msg.catId) {
+            if (isTerminalDispositionEvent(msg) && msg.catId) {
               opts.invocationTracker?.completeSlot?.(resolvedThreadId, msg.catId, controller);
             }
             const legacyPayload = { ...msg };
