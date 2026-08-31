@@ -26,6 +26,7 @@ import {
   canonicalizeActionIdentity,
   isActionSuccessorReturnReplay,
 } from './action-successor-state-machine.js';
+import { preflightTerminalProducerCapability } from './action-successor-terminal-producer-preflight.js';
 
 export type {
   ActionSuccessorAdmissionInput,
@@ -237,6 +238,23 @@ export class ActionSuccessorAdmissionService {
     });
     if (input.action.returnToPredecessor) return this.returnToPredecessor(identity.key, input);
     if (input.action.replace) return this.replace(identity.key, input);
+
+    // F167: terminal producer capability preflight — fail-closed when any
+    // holder carrier demonstrably cannot produce the required terminal
+    // predicate (e.g. native kimi-code without MCP tool access).
+    if (input.holderTerminalProducerCapabilities) {
+      const preflight = preflightTerminalProducerCapability({
+        holderCatIds: input.holderCatIds,
+        holderTerminalProducerCapabilities: input.holderTerminalProducerCapabilities,
+      });
+      if (!preflight.allow) {
+        return {
+          admit: false,
+          outcome: 'terminal_producer_unavailable',
+          incapableCatIds: preflight.incapableCatIds,
+        };
+      }
+    }
 
     const claimOrigin = input.action.claimOrigin ?? 'structured_transfer';
     const issuerStandingEvidenceRef = this.resolveIssuerStanding(input, claimOrigin);

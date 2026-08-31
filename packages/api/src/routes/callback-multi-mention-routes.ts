@@ -544,7 +544,7 @@ async function dispatchToTarget(
   const toolsUsed: string[] = [];
   // Custody was established by `admitLegacyTarget` before ANY sibling started (requirement 2).
   const { controller } = admission;
-  let invocationId: string | undefined = admission.invocationId;
+  const invocationId: string | undefined = admission.invocationId;
 
   try {
     let governanceErrorCode: string | undefined;
@@ -981,6 +981,11 @@ export function registerMultiMentionRoutes(app: FastifyInstance, deps: MultiMent
         protocolActionWithoutCustodyTotal.add(1);
         return reply.status(503).send({ status: 'action_fence_unavailable' });
       }
+      // F167: resolve terminal producer capabilities for all holder cats
+      const holderTerminalProducerCapabilities = Object.fromEntries(
+        targetCatIds.map((catId) => [catId, deps.router.terminalProducerCapability(catId)]),
+      );
+
       try {
         const incomingActionLeaseRef = body.action.replace
           ? await resolveCallbackActionLeaseRef(record, deps.invocationRecordStore)
@@ -996,10 +1001,18 @@ export function registerMultiMentionRoutes(app: FastifyInstance, deps: MultiMent
           now: Date.now(),
           ...(incomingActionLeaseRef ? { incomingActionLeaseRef } : {}),
           action: body.action,
+          holderTerminalProducerCapabilities,
         });
         if (!admission.admit) {
           if (admission.outcome === 'subject_terminal') {
             return reply.send({ status: admission.outcome, terminal: admission.terminal });
+          }
+          if (admission.outcome === 'terminal_producer_unavailable') {
+            return reply.status(400).send({
+              status: admission.outcome,
+              message: 'One or more holder carriers cannot produce the required terminal predicate.',
+              incapableCatIds: admission.incapableCatIds,
+            });
           }
           if (admission.outcome !== 'replayed') {
             return reply.send({ status: admission.outcome, actionLease: admission.lease });
