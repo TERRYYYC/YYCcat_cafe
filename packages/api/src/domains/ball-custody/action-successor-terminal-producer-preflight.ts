@@ -21,6 +21,16 @@ export interface TerminalProducerCapability {
   readonly reason?: string;
 }
 
+/**
+ * Injected resolver that maps a catId to its terminal producer capability.
+ * Implemented by AgentRouter; injected into ActionSuccessorAdmissionService
+ * so ALL admission paths (claim, replace, continueFreshRevision) get the
+ * preflight check — not just the callback routes that pass it explicitly.
+ */
+export interface TerminalProducerCapabilityResolver {
+  resolve(catId: string): TerminalProducerCapability;
+}
+
 export type TerminalProducerPreflightResult =
   | { readonly allow: true }
   | {
