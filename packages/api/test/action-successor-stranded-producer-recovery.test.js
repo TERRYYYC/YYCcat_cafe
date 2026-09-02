@@ -162,9 +162,10 @@ describe('F167 stranded producer recovery state machine', () => {
     });
   });
 
-  describe('guard: return transition present', () => {
-    it('rejects when return transitions exist', () => {
+  describe('guard: active return delivery blocks recovery', () => {
+    it('rejects when returnDeliveryState is pending', () => {
       const lease = strandedLease({
+        returnDeliveryState: 'pending',
         returnTransitions: [
           {
             predecessorCatId: 'codex-sol',
@@ -175,6 +176,58 @@ describe('F167 stranded producer recovery state machine', () => {
       });
       const result = recoverStrandedProducer(lease, recoveryInput());
       assert.equal(result.outcome, 'return_present');
+    });
+
+    it('rejects when returnDeliveryState is overdue', () => {
+      const lease = strandedLease({
+        returnDeliveryState: 'overdue',
+        returnTransitions: [
+          {
+            predecessorCatId: 'codex-sol',
+            predecessorThreadId: 'thread-dispatch',
+            returnedAt: 300,
+          },
+        ],
+      });
+      const result = recoverStrandedProducer(lease, recoveryInput());
+      assert.equal(result.outcome, 'return_present');
+    });
+
+    it('allows recovery when returnTransitions exist but returnDeliveryState is cleared (reattached history)', () => {
+      // After reattach, returnTransitions is audit trail but returnDeliveryState
+      // is cleared. Recovery must NOT be permanently blocked by historical transitions.
+      const lease = strandedLease({
+        returnDeliveryState: undefined,
+        returnTransitions: [
+          {
+            predecessorCatId: 'codex-sol',
+            predecessorThreadId: 'thread-dispatch',
+            returnedAt: 300,
+          },
+        ],
+      });
+      const result = recoverStrandedProducer(lease, recoveryInput());
+      assert.equal(result.outcome, 'recovered', 'historical transitions must not block recovery');
+    });
+  });
+
+  describe('guard: dispatch reservation blocks recovery', () => {
+    it('rejects when dispatchDeliveryReservation exists (external delivery in flight)', () => {
+      const lease = strandedLease({
+        dispatchDeliveryReservation: {
+          predicateDigest: 'test-digest',
+          freshnessEvidenceRef: 'community:test:head:abc',
+          reservedAt: 400,
+        },
+      });
+      const result = recoverStrandedProducer(lease, recoveryInput());
+      assert.equal(result.outcome, 'dispatch_reserved');
+    });
+
+    it('allows recovery when no dispatchDeliveryReservation exists', () => {
+      const lease = strandedLease({ dispatchDeliveryReservation: undefined });
+      const result = recoverStrandedProducer(lease, recoveryInput());
+      assert.equal(result.outcome, 'recovered');
     });
   });
 

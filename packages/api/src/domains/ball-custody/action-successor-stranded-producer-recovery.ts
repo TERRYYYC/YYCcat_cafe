@@ -13,7 +13,8 @@
  *  - capability witness must be `unavailable`
  *  - no existing outcomes (would compete with late verdict)
  *  - no completion candidates (verdict in progress)
- *  - no return transitions (custody return in progress)
+ *  - no active return delivery (pending/overdue — NOT historical transitions)
+ *  - no active dispatch delivery reservation (carrier may be delivering)
  *
  * The recovery marks the holder outcome as `unavailable`, which transitions
  * the lease to `replaceable` (for single-holder leases), enabling the issuer
@@ -53,6 +54,7 @@ export type RecoverStrandedProducerResult =
         | 'output_present'
         | 'candidate_present'
         | 'return_present'
+        | 'dispatch_reserved'
         | 'predicate_mismatch'
         | 'capability_not_unavailable';
       readonly lease: ActionSuccessorLease;
@@ -116,9 +118,19 @@ export function recoverStrandedProducer(
     return { outcome: 'candidate_present', lease: current };
   }
 
-  // ── Guard: no return transitions (custody return in progress) ──
-  if (current.returnTransitions.length > 0) {
+  // ── Guard: no ACTIVE return delivery (custody return in progress) ──
+  // returnTransitions is an audit trail preserved across reattach; only
+  // an active returnDeliveryState (pending/overdue) indicates a live return.
+  if (current.returnDeliveryState === 'pending' || current.returnDeliveryState === 'overdue') {
     return { outcome: 'return_present', lease: current };
+  }
+
+  // ── Guard: no active dispatch delivery reservation ──
+  // Dispatch recovery does reserve → external delivery; if a reservation
+  // exists the external carrier may still be delivering. Recovery must
+  // not race with that in-flight delivery.
+  if (current.dispatchDeliveryReservation) {
+    return { outcome: 'dispatch_reserved', lease: current };
   }
 
   // ── Recovery: mark holder as unavailable ──
