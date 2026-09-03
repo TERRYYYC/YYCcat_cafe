@@ -10461,12 +10461,17 @@ describe('invokeSingleCat account-store compatibility (#1303)', { concurrency: f
     'CAT_CAFE_RUNTIME_ROOT',
     'CAT_CAFE_WORKSPACE_ROOT',
     'CAT_CAFE_SKIP_HOMEDIR_MIGRATION',
+    // Host project-root policy must not leak in: a denied tmp root would flip
+    // expected 201/ok verdicts to 400 regardless of store contents.
+    'PROJECT_ALLOWED_ROOTS',
+    'PROJECT_ALLOWED_ROOTS_APPEND',
+    'PROJECT_DENIED_ROOTS',
   ];
 
   /** Run one scenario: register an opencode cat bound to `accountRef`, lay the
    *  stores out per `layout`, run the real invokeSingleCat, return messages +
    *  the callbackEnv the stub service received (null when never invoked). */
-  async function runScenario({ accountRef, layout, breakTopology = false }) {
+  async function runScenario({ accountRef, layout, breakTopology = false, globalStore = null }) {
     const savedEnv = {};
     for (const key of COMPAT_ENV_KEYS) savedEnv[key] = process.env[key];
     const { resetMigrationState } = await import('../dist/config/catalog-accounts.js');
@@ -10496,7 +10501,7 @@ describe('invokeSingleCat account-store compatibility (#1303)', { concurrency: f
       id: boundCatId,
       mentionPatterns: [`@${boundCatId}`],
       clientId: 'opencode',
-      accountRef,
+      ...(accountRef ? { accountRef } : {}),
       defaultModel: 'custom-model',
       provider: 'custom',
     });
@@ -10513,6 +10518,9 @@ describe('invokeSingleCat account-store compatibility (#1303)', { concurrency: f
     try {
       delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
       delete process.env.CAT_CAFE_CONFIG_ROOT;
+      delete process.env.PROJECT_ALLOWED_ROOTS;
+      delete process.env.PROJECT_ALLOWED_ROOTS_APPEND;
+      delete process.env.PROJECT_DENIED_ROOTS;
       process.env.CAT_CAFE_SKIP_HOMEDIR_MIGRATION = '1';
       // CONFIG_ROOT pins resolveActiveProjectRoot to runtimeRoot regardless of
       // the isolated CAT_TEMPLATE_PATH the file-level helper installed.
@@ -10520,6 +10528,25 @@ describe('invokeSingleCat account-store compatibility (#1303)', { concurrency: f
       process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
       if (breakTopology) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
       else process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+      if (globalStore) {
+        // Upstream #1303 workaround topology: one global store, even with a
+        // declared runtime root and no workspace root.
+        await mkdir(join(globalStore.root, '.cat-cafe'), { recursive: true });
+        await writeFile(
+          join(globalStore.root, '.cat-cafe', 'accounts.json'),
+          JSON.stringify(globalStore.accounts, null, 2),
+          'utf-8',
+        );
+        if (globalStore.credentials) {
+          await writeFile(
+            join(globalStore.root, '.cat-cafe', 'credentials.json'),
+            JSON.stringify(globalStore.credentials, null, 2),
+            'utf-8',
+          );
+        }
+        process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = globalStore.root;
+        delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+      }
       resetMigrationState();
 
       let msgs = [];
@@ -10611,7 +10638,7 @@ describe('invokeSingleCat account-store compatibility (#1303)', { concurrency: f
       },
     });
     assert.equal(result.seenOptions.length, 0, 'service must NOT be invoked on a store conflict');
-    assert.match(failureText(result), /divergent content/i, 'conflict must surface a loud, specific error');
+    assert.match(failureText(result), /divergent between|torn across/i, 'conflict must surface a loud, specific error');
   });
 
   it('invalid topology: dispatch fails loud and never invokes the service', async () => {
@@ -10627,5 +10654,95 @@ describe('invokeSingleCat account-store compatibility (#1303)', { concurrency: f
     });
     assert.equal(result.seenOptions.length, 0, 'service must NOT be invoked on an unresolvable topology');
     assert.match(failureText(result), /accounts root unresolvable/i);
+  });
+
+  it('GLOBAL_CONFIG_ROOT single store: binding resolves even with runtime root declared and no workspace root', async () => {
+    const globalRoot = await mkdtemp(join(tmpdir(), 'acct-compat-invoke-global-'));
+    try {
+      const result = await runScenario({
+        accountRef: 'team-anthropic',
+        breakTopology: true,
+        layout: {},
+        globalStore: {
+          root: globalRoot,
+          accounts: { 'team-anthropic': { authType: 'api_key', clientId: 'opencode', models: ['custom-model'] } },
+          credentials: { 'team-anthropic': { apiKey: 'sk-global-key' } },
+        },
+      });
+      assert.ok(
+        result.msgs.some((m) => m.type === 'done'),
+        `GLOBAL single-store binding must dispatch, got: ${failureText(result)}`,
+      );
+      assert.equal(
+        result.seenOptions[0]?.callbackEnv?.ANTHROPIC_API_KEY,
+        'sk-global-key',
+        'service must receive the global-store credential',
+      );
+    } finally {
+      await rmWithRetry(globalRoot);
+    }
+  });
+
+  it('no-binding cat: identity-checked family discovery resolves a canonical-store credential', async () => {
+    const result = await runScenario({
+      accountRef: undefined,
+      layout: {
+        workspace: {
+          accounts: {
+            // Foreign squatter on the well-known id must be skipped…
+            opencode: { authType: 'api_key', clientId: 'openai' },
+            // …and the installer credential for the right family wins.
+            'installer-opencode': { authType: 'api_key', clientId: 'opencode' },
+          },
+          credentials: {
+            opencode: { apiKey: 'sk-foreign-openai' },
+            'installer-opencode': { apiKey: 'sk-installer-opencode' },
+          },
+        },
+      },
+    });
+    assert.ok(
+      result.msgs.some((m) => m.type === 'done'),
+      `no-binding discovery must dispatch, got: ${failureText(result)}`,
+    );
+    const env = result.seenOptions[0]?.callbackEnv ?? {};
+    assert.equal(env.ANTHROPIC_API_KEY, 'sk-installer-opencode', 'identity-checked discovery must pick the family key');
+    assert.notEqual(env.ANTHROPIC_API_KEY, 'sk-foreign-openai', 'foreign squatter key must never be selected');
+  });
+
+  it('no-binding cat: legacy-only family credential stays dispatchable', async () => {
+    const result = await runScenario({
+      accountRef: undefined,
+      layout: {
+        runtime: {
+          accounts: { 'installer-opencode': { authType: 'api_key', clientId: 'opencode' } },
+          credentials: { 'installer-opencode': { apiKey: 'sk-legacy-family' } },
+        },
+      },
+    });
+    assert.ok(
+      result.msgs.some((m) => m.type === 'done'),
+      `legacy-only family discovery must dispatch, got: ${failureText(result)}`,
+    );
+    assert.equal(result.seenOptions[0]?.callbackEnv?.ANTHROPIC_API_KEY, 'sk-legacy-family');
+  });
+
+  it('no-binding cat: a divergent family candidate fails loud even when another candidate agrees', async () => {
+    const agreed = { opencode: { authType: 'oauth', clientId: 'opencode' } };
+    const result = await runScenario({
+      accountRef: undefined,
+      layout: {
+        workspace: {
+          accounts: { ...agreed, 'installer-opencode': { authType: 'api_key', clientId: 'opencode' } },
+          credentials: { 'installer-opencode': { apiKey: 'sk-canonical-secret' } },
+        },
+        runtime: {
+          accounts: { ...agreed, 'installer-opencode': { authType: 'api_key', clientId: 'opencode' } },
+          credentials: { 'installer-opencode': { apiKey: 'sk-legacy-secret' } },
+        },
+      },
+    });
+    assert.equal(result.seenOptions.length, 0, 'service must NOT be invoked when a family candidate is divergent');
+    assert.match(failureText(result), /divergent between/i);
   });
 });

@@ -12,11 +12,8 @@
  */
 
 import { catRegistry } from '@cat-cafe/shared';
-import {
-  type BuiltinAccountClient,
-  builtinAccountIdForClient,
-  resolveForClient,
-} from '../../../../config/account-resolver.js';
+import type { BuiltinAccountClient } from '../../../../config/account-resolver.js';
+import { resolveRuntimeAccountProfile } from '../../../../config/account-root.js';
 import { resolveBoundAccountRefForCat } from '../../../../config/cat-account-binding.js';
 import { getCatModel } from '../../../../config/cat-models.js';
 import type { AIActionResponse, AIProvider } from '../game/werewolf/WerewolfAIPlayer.js';
@@ -72,22 +69,37 @@ export class LlmAIProvider implements AIProvider {
     }
   }
 
-  /** Resolve API key via deterministic binding — never discovery chain (502 regression). */
-  private resolveApiKey(client: BuiltinAccountClient): string | undefined {
+  /**
+   * Resolve the FULL credential (key + endpoint) through the same atomic
+   * account verdict primary dispatch consumes (#1303 / F289 Phase 0).
+   *
+   * - An explicit cat binding is the only deliberate cross-protocol path and
+   *   carries its own baseUrl: a gateway-bound key is sent to the gateway,
+   *   never to the official domain.
+   * - Without a binding, family resolution is identity-checked — a foreign
+   *   persisted clientId squatting a well-known id ("claude" with clientId
+   *   "openai") is never selected, so its key never leaves the machine.
+   * - No resolvable key → throw BEFORE any network call (fail closed, zero
+   *   network on foreign/missing credentials).
+   */
+  private async resolveCredential(client: BuiltinAccountClient): Promise<{ apiKey: string; baseUrl?: string }> {
     const entry = catRegistry.tryGet(this.catId);
-    const accountRef =
-      (entry ? resolveBoundAccountRefForCat(process.cwd(), this.catId, entry.config) : undefined) ??
-      builtinAccountIdForClient(client) ??
-      undefined;
-    const profile = resolveForClient(process.cwd(), client, accountRef);
-    return profile?.apiKey;
+    const boundRef = entry ? resolveBoundAccountRefForCat(process.cwd(), this.catId, entry.config) : undefined;
+    const resolution = await resolveRuntimeAccountProfile(process.cwd(), client, boundRef);
+    const apiKey = resolution.kind === 'ok' ? resolution.profile.apiKey : undefined;
+    if (!apiKey) {
+      throw new Error(
+        `No ${client} API key resolvable for cat "${this.catId}" — bind an account with a credential in Hub > account settings`,
+      );
+    }
+    const baseUrl = resolution.kind === 'ok' ? resolution.profile.baseUrl : undefined;
+    return { apiKey, ...(baseUrl ? { baseUrl: baseUrl.replace(/\/+$/, '') } : {}) };
   }
 
   private async callAnthropic(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
-    const apiKey = this.resolveApiKey('anthropic');
-    if (!apiKey) throw new Error('No Anthropic API key in credentials.json — run install-auth-config.mjs to configure');
+    const { apiKey, baseUrl } = await this.resolveCredential('anthropic');
 
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const resp = await fetch(`${baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -112,10 +124,9 @@ export class LlmAIProvider implements AIProvider {
   }
 
   private async callOpenAI(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
-    const apiKey = this.resolveApiKey('openai');
-    if (!apiKey) throw new Error('No OpenAI API key in credentials.json — run install-auth-config.mjs to configure');
+    const { apiKey, baseUrl } = await this.resolveCredential('openai');
 
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    const resp = await fetch(`${baseUrl ?? 'https://api.openai.com/v1'}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -139,11 +150,10 @@ export class LlmAIProvider implements AIProvider {
   }
 
   private async callGoogle(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
-    const apiKey = this.resolveApiKey('google');
-    if (!apiKey) throw new Error('No Google API key in credentials.json — run install-auth-config.mjs to configure');
+    const { apiKey, baseUrl } = await this.resolveCredential('google');
 
     const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${apiKey}`,
+      `${baseUrl ?? 'https://generativelanguage.googleapis.com'}/v1beta/models/${this.model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -165,10 +175,9 @@ export class LlmAIProvider implements AIProvider {
   }
 
   private async callKimi(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
-    const apiKey = this.resolveApiKey('kimi');
-    if (!apiKey) throw new Error('No Kimi API key in credentials or MOONSHOT_API_KEY env');
+    const { apiKey, baseUrl } = await this.resolveCredential('kimi');
 
-    const resp = await fetch('https://api.moonshot.ai/v1/chat/completions', {
+    const resp = await fetch(`${baseUrl ?? 'https://api.moonshot.ai/v1'}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

@@ -256,7 +256,7 @@ async function resolveAccountStoreRootOrThrow(
   const trimmed = accountRef?.trim();
   if (!trimmed) return topology.primaryRoot;
   const selection = selectAccountStoreForRef(topology, trimmed);
-  if (selection.kind === 'conflict') throw accountStoreConflictError(trimmed);
+  if (selection.kind === 'conflict' || selection.kind === 'invalid') throw accountStoreConflictError(selection);
   return selection.root;
 }
 

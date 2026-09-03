@@ -32,19 +32,11 @@ import {
 } from '@cat-cafe/shared';
 import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import {
-  builtinCandidateIdsForClient,
   providerRequiresThreadWorkspace,
   resolveBuiltinClientForProvider,
-  resolveForClient,
   validateRuntimeProviderBinding,
 } from '../../../../../config/account-resolver.js';
-import {
-  accountStoreConflictError,
-  accountsRootUnresolvableError,
-  resolveAccountStoreTopology,
-  selectAccountStoreForFamily,
-  selectAccountStoreForRef,
-} from '../../../../../config/account-root.js';
+import { AccountStoreVerdictError, resolveRuntimeAccountProfile } from '../../../../../config/account-root.js';
 import { resolveBoundAccountRefForCat } from '../../../../../config/cat-account-binding.js';
 import { buildCatGitIdentityEnv } from '../../../../../config/cat-git-identity.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
@@ -2538,35 +2530,25 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     // worktree pointed to by thread.projectPath) misses runtime-only state.
     // workingProjectRoot is still used for shared-state preflight + cat cwd.
     const projectRoot = resolveActiveProjectRoot(process.cwd());
-    // #1303 / F289 Phase 0: account reads consume the same per-ref store
-    // verdict as create/update validation in routes/cats.ts — canonical-only,
-    // legacy-only (legacy installs stay readable), both-equal, or CONFLICT
-    // (fail closed, never guess). Topology failures also fail closed.
-    const accountTopology = await resolveAccountStoreTopology(projectRoot);
-    if (!accountTopology) throw accountsRootUnresolvableError();
+    // #1303 / F289 Phase 0: ONE atomic account verdict shared with
+    // create/update validation (routes/cats.ts) and game LLM calls —
+    // per-ref store selection (canonical-only / legacy-only / both-equal /
+    // conflict incl. torn pairs / malformed stores fail closed), plus
+    // identity-checked family discovery when the cat has no explicit binding.
+    // No consumer re-derives its own root or second-guesses the ranking.
     const effectiveAccountRef = resolveBoundAccountRefForCat(projectRoot, catId, catConfig);
-    const accountsRoot = (() => {
-      if (effectiveAccountRef) {
-        const selection = selectAccountStoreForRef(accountTopology, effectiveAccountRef);
-        if (selection.kind === 'conflict') throw accountStoreConflictError(effectiveAccountRef);
-        return selection.root;
-      }
-      if (builtinClient) {
-        const selection = selectAccountStoreForFamily(accountTopology, builtinCandidateIdsForClient(builtinClient));
-        if (selection.kind === 'conflict') throw accountStoreConflictError(selection.ref);
-        return selection.root;
-      }
-      return accountTopology.primaryRoot;
-    })();
     const resolveRuntimeAccount = async () => {
       if (!builtinClient) return null;
       // Yield to event loop so preflight warnings are delivered before account resolution.
       await Promise.resolve();
-      const runtime = resolveForClient(accountsRoot, builtinClient, effectiveAccountRef);
-      if (effectiveAccountRef && !runtime) {
-        throw new Error(`bound account "${effectiveAccountRef}" not found`);
+      const resolution = await resolveRuntimeAccountProfile(projectRoot, builtinClient, effectiveAccountRef);
+      if (resolution.kind === 'none') {
+        if (effectiveAccountRef) {
+          throw new Error(`bound account "${effectiveAccountRef}" not found`);
+        }
+        return null;
       }
-      return runtime;
+      return resolution.profile;
     };
     const assertCompatibleRuntimeAccount = <T extends { id: string }>(
       account: (T & Parameters<typeof validateRuntimeProviderBinding>[1]) | null,
@@ -2591,6 +2573,11 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     try {
       resolvedAccount = assertCompatibleRuntimeAccount(await resolveRuntimeAccount());
     } catch (err) {
+      // Store verdict failures (conflict/torn/malformed/unresolvable topology)
+      // must surface verbatim — wrapping them hides the fail-closed reason.
+      if (err instanceof AccountStoreVerdictError) {
+        throw err;
+      }
       if (isExplicitBindingCompatibilityError(err) || isBoundAccountResolutionError(err)) {
         throw err;
       }

@@ -3,16 +3,18 @@
  *
  * Per-ref verdict across the workspace (canonical) and runtime (legacy)
  * stores: canonical-only, legacy-only (legacy installs stay readable),
- * both-equal, and divergent copies which must fail closed as a conflict —
- * never a silent "workspace wins".
+ * both-equal, divergent copies and TORN pairs fail closed, malformed stores
+ * are INVALID (never treated as absent), probing is strictly read-only, and
+ * CAT_CAFE_GLOBAL_CONFIG_ROOT collapses the topology to a single store
+ * (upstream #1303 workaround stays supported).
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, beforeEach, describe, it } from 'node:test';
 
-const { resolveAccountStoreTopology, selectAccountStoreForFamily, selectAccountStoreForRef } = await import(
+const { resolveAccountStoreTopology, resolveRuntimeAccountProfile, selectAccountStoreForRef } = await import(
   '../dist/config/account-root.js'
 );
 const { resetMigrationState } = await import('../dist/config/catalog-accounts.js');
@@ -24,12 +26,15 @@ const ENV_KEYS_TO_ISOLATE = [
   'CAT_CAFE_RUNTIME_ROOT',
   'CAT_CAFE_WORKSPACE_ROOT',
   'CAT_CAFE_SKIP_HOMEDIR_MIGRATION',
+  'PROJECT_ALLOWED_ROOTS',
+  'PROJECT_ALLOWED_ROOTS_APPEND',
+  'PROJECT_DENIED_ROOTS',
 ];
 
-function makeRoot(prefix) {
+function makeRoot(prefix, { withCatCafeDir = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), prefix));
   tempDirs.push(root);
-  mkdirSync(join(root, '.cat-cafe'), { recursive: true });
+  if (withCatCafeDir) mkdirSync(join(root, '.cat-cafe'), { recursive: true });
   return root;
 }
 
@@ -110,6 +115,7 @@ describe('account-store compatibility verdict', { concurrency: false }, () => {
     writeStore(runtimeRoot, { acme: { authType: 'api_key', clientId: 'anthropic', baseUrl: 'https://b' } });
     const sel = selectAccountStoreForRef(await topology(), 'acme');
     assert.equal(sel.kind, 'conflict', 'divergent copies must not silently pick a winner');
+    assert.equal(sel.reason, 'divergent');
   });
 
   it('same account but divergent credential secrets fails closed as a conflict', async () => {
@@ -120,29 +126,138 @@ describe('account-store compatibility verdict', { concurrency: false }, () => {
     assert.equal(sel.kind, 'conflict', 'divergent secrets must not silently pick a winner');
   });
 
-  it('family verdict uses the first candidate present in either store', async () => {
-    writeStore(workspaceRoot, {});
-    writeStore(runtimeRoot, { claude: { authType: 'oauth' } });
-    const sel = selectAccountStoreForFamily(await topology(), ['claude', 'builtin_anthropic', 'installer-anthropic']);
-    assert.equal(sel.kind, 'ok');
-    assert.equal(sel.origin, 'legacy');
-  });
-
-  it('single-checkout topology has no legacy root and always resolves canonically', async () => {
-    delete process.env.CAT_CAFE_RUNTIME_ROOT;
-    delete process.env.CAT_CAFE_WORKSPACE_ROOT;
-    const t = await resolveAccountStoreTopology(workspaceRoot);
-    assert.ok(t);
-    assert.equal(t.legacyRoot, null);
+  it('torn pair (canonical account, legacy-only credential) fails closed', async () => {
     writeStore(workspaceRoot, { acme: { authType: 'api_key', clientId: 'anthropic' } });
-    const sel = selectAccountStoreForRef(t, 'acme');
-    assert.equal(sel.kind, 'ok');
-    assert.equal(sel.origin, 'canonical');
+    writeStore(runtimeRoot, {}, { acme: { apiKey: 'sk-only-in-legacy' } });
+    const sel = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(sel.kind, 'conflict', 'a torn pair must not validate on one side and lose its key at dispatch');
+    assert.equal(sel.reason, 'torn');
   });
 
-  it('declared runtime root without workspace root is an unresolvable topology', async () => {
+  it('torn pair (legacy account, canonical-only credential) fails closed', async () => {
+    writeStore(workspaceRoot, {}, { acme: { apiKey: 'sk-only-in-canonical' } });
+    writeStore(runtimeRoot, { acme: { authType: 'api_key', clientId: 'anthropic' } });
+    const sel = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(sel.kind, 'conflict');
+    assert.equal(sel.reason, 'torn');
+  });
+
+  it('malformed store file is INVALID, never absent', async () => {
+    writeStore(workspaceRoot, { acme: { authType: 'api_key', clientId: 'anthropic' } });
+    writeFileSync(join(runtimeRoot, '.cat-cafe', 'accounts.json'), '{ not json', 'utf-8');
+    const sel = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(sel.kind, 'invalid', 'a parse failure must fail closed, not read as absence');
+    assert.match(sel.store, /accounts\.json/);
+  });
+
+  it('store probing is strictly read-only — no migration writes into the probed root', async () => {
+    // Legacy root contains ONLY a pre-migration embedded catalog. The old
+    // migration-aware reader would materialize accounts.json here on probe.
+    writeFileSync(
+      join(runtimeRoot, '.cat-cafe', 'cat-catalog.json'),
+      JSON.stringify({ version: 2, breeds: [], roster: {}, accounts: { emb: { authType: 'oauth' } } }, null, 2),
+      'utf-8',
+    );
+    const before = readdirSync(join(runtimeRoot, '.cat-cafe')).sort();
+    const sel = selectAccountStoreForRef(await topology(), 'emb');
+    assert.equal(sel.kind, 'ok', 'embedded pre-migration account must be readable');
+    assert.equal(sel.origin, 'legacy');
+    const afterFiles = readdirSync(join(runtimeRoot, '.cat-cafe')).sort();
+    assert.deepEqual(afterFiles, before, 'probing must not create or migrate any file in the probed store');
+  });
+
+  it('CAT_CAFE_GLOBAL_CONFIG_ROOT collapses to a single global store (upstream #1303 workaround)', async () => {
+    const globalRoot = makeRoot('acct-compat-global-');
+    process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = globalRoot;
+    // Runtime declared, workspace missing — previously an unresolvable
+    // topology; with GLOBAL set it must be a healthy single store.
+    delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+    writeStore(globalRoot, { acme: { authType: 'api_key', clientId: 'anthropic', models: ['m'] } });
+
+    const t = await resolveAccountStoreTopology(runtimeRoot);
+    assert.ok(t, 'GLOBAL root must yield a resolvable topology even without a workspace root');
+    assert.equal(t.legacyRoot, null);
+    const sel = selectAccountStoreForRef(t, 'acme');
+    assert.equal(sel.kind, 'ok', 'the account stored under the global root must be found');
+  });
+
+  it('declared runtime root without workspace root (and no GLOBAL) is unresolvable', async () => {
     delete process.env.CAT_CAFE_WORKSPACE_ROOT;
     const t = await resolveAccountStoreTopology(runtimeRoot);
     assert.equal(t, null, 'callers must fail closed on unresolvable topology');
+  });
+
+  // ── Atomic family + profile resolution ──
+
+  it('family resolution fails closed when ANY candidate is divergent, even an unranked installer', async () => {
+    // Both stores agree on the oauth "claude" builtin…
+    const claude = { claude: { authType: 'oauth' } };
+    // …but the installer credential secret diverges. A split ranking would
+    // lock the root by "claude" then silently pick one installer secret.
+    writeStore(
+      workspaceRoot,
+      { ...claude, 'installer-anthropic': { authType: 'api_key' } },
+      {
+        'installer-anthropic': { apiKey: 'sk-canonical' },
+      },
+    );
+    writeStore(
+      runtimeRoot,
+      { ...claude, 'installer-anthropic': { authType: 'api_key' } },
+      {
+        'installer-anthropic': { apiKey: 'sk-legacy' },
+      },
+    );
+    await assert.rejects(
+      () => resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', undefined),
+      /divergent between/i,
+      'ranking must never route around a divergent candidate',
+    );
+  });
+
+  it('family resolution ranks an identity-matched credentialed candidate from ITS OWN verdict root', async () => {
+    // claude oauth equal in both stores; installer key exists ONLY in legacy.
+    writeStore(workspaceRoot, { claude: { authType: 'oauth' } });
+    writeStore(
+      runtimeRoot,
+      { claude: { authType: 'oauth' }, 'installer-anthropic': { authType: 'api_key', clientId: 'anthropic' } },
+      { 'installer-anthropic': { apiKey: 'sk-legacy-installer' } },
+    );
+    const resolution = await resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', undefined);
+    assert.equal(resolution.kind, 'ok');
+    assert.equal(resolution.profile.id, 'installer-anthropic');
+    assert.equal(resolution.profile.apiKey, 'sk-legacy-installer');
+    assert.equal(resolution.root, runtimeRoot, 'profile must come from the candidate own verdict root');
+  });
+
+  it('family resolution skips foreign-clientId squatters and includes canonical ids', async () => {
+    writeStore(
+      workspaceRoot,
+      {
+        claude: { authType: 'api_key', clientId: 'openai' },
+        anthropic: { authType: 'api_key', clientId: 'anthropic', models: ['m'] },
+      },
+      { claude: { apiKey: 'sk-openai-foreign' }, anthropic: { apiKey: 'sk-real-anthropic' } },
+    );
+    writeStore(runtimeRoot, {});
+    const resolution = await resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', undefined);
+    assert.equal(resolution.kind, 'ok');
+    assert.equal(resolution.profile.id, 'anthropic', 'canonical id must participate; foreign squatter must be skipped');
+    assert.equal(resolution.profile.apiKey, 'sk-real-anthropic');
+  });
+
+  it('explicit binding takes the per-ref verdict and resolves that exact ref', async () => {
+    writeStore(
+      workspaceRoot,
+      { 'my-gw': { authType: 'api_key', clientId: 'anthropic', baseUrl: 'https://gw' } },
+      {
+        'my-gw': { apiKey: 'sk-gw' },
+      },
+    );
+    writeStore(runtimeRoot, {});
+    const resolution = await resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', 'my-gw');
+    assert.equal(resolution.kind, 'ok');
+    assert.equal(resolution.profile.id, 'my-gw');
+    assert.equal(resolution.profile.baseUrl, 'https://gw');
   });
 });

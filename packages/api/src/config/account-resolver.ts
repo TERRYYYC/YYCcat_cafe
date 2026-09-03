@@ -154,7 +154,7 @@ function resolveAnthropicDefaultBinding(projectRoot: string): RuntimeProviderPro
  * fallback for legacy entries created before clientId was persisted. An
  * explicit non-builtin clientId grants no builtin identity at all.
  */
-function deriveAccountClient(ref: string, account: AccountConfig): BuiltinAccountClient | null {
+export function deriveAccountClient(ref: string, account: AccountConfig): BuiltinAccountClient | null {
   const persisted = account.clientId;
   if (persisted) {
     return isBuiltinAccountClient(persisted) ? persisted : null;
@@ -166,7 +166,10 @@ function deriveAccountClient(ref: string, account: AccountConfig): BuiltinAccoun
  *  Single source shared by resolveForClient and dispatch store selection. */
 export function builtinCandidateIdsForClient(client: BuiltinAccountClient): string[] {
   const wellKnownId = builtinAccountIdForClient(client);
-  return [...(wellKnownId ? [wellKnownId] : []), `builtin_${client}`, `installer-${client}`];
+  // Well-known legacy id first, then the canonical OAuth id (deriveAccountId
+  // display-name slug, e.g. "anthropic"/"openai"/"google"), then reserved and
+  // installer forms. Deduplicated — for kimi/opencode both forms coincide.
+  return [...new Set([...(wellKnownId ? [wellKnownId] : []), client, `builtin_${client}`, `installer-${client}`])];
 }
 
 const GOOGLE_OWNED_DOMAINS = ['generativelanguage.googleapis.com', 'googleapis.com'];

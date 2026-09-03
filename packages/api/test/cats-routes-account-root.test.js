@@ -127,18 +127,13 @@ function injectCat(app, method, url, payload) {
   });
 }
 
-/** Fast-layer mirror of the primary dispatch store selection (the SAME
- *  exported verdict functions invoke-single-cat consumes — not a re-derivation).
- *  The full wiring (real invokeSingleCat + stub service) is covered in
- *  invoke-single-cat.test.js "account-store compatibility at dispatch". */
+/** Fast-layer dispatch check: calls the EXACT atomic resolver primary
+ *  dispatch and game LLM calls consume. The full wiring (real invokeSingleCat
+ *  + stub service) is covered in invoke-single-cat.test.js. */
 async function resolveLikeDispatch(runtimeProjectRoot, builtinClient, accountRef) {
-  const { resolveAccountStoreTopology, selectAccountStoreForRef } = await import('../dist/config/account-root.js');
-  const { resolveForClient } = await import('../dist/config/account-resolver.js');
-  const topology = await resolveAccountStoreTopology(runtimeProjectRoot);
-  assert.ok(topology, 'dispatch account-store topology must resolve in a valid topology');
-  const selection = selectAccountStoreForRef(topology, accountRef);
-  assert.notEqual(selection.kind, 'conflict', 'binding accepted by the route must not be a store conflict');
-  return resolveForClient(selection.root, builtinClient, accountRef);
+  const { resolveRuntimeAccountProfile } = await import('../dist/config/account-root.js');
+  const resolution = await resolveRuntimeAccountProfile(runtimeProjectRoot, builtinClient, accountRef);
+  return resolution.kind === 'ok' ? resolution.profile : null;
 }
 
 describe('cats routes account-root parity', { concurrency: false }, () => {
@@ -307,7 +302,7 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
     const app = await buildApp();
     const res = await injectCat(app, 'POST', '/api/cats', baseCreatePayload({ accountRef: 'team-anthropic' }));
     assert.equal(res.statusCode, 400, `expected conflict to fail closed, got ${res.statusCode}: ${res.body}`);
-    assert.match(JSON.parse(res.body).error, /divergent content/i);
+    assert.match(JSON.parse(res.body).error, /divergent between/i);
     await app.close();
   });
 
