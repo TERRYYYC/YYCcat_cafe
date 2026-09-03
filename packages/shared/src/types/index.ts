@@ -267,6 +267,7 @@ export type { CatAlternative, CatRoutingError } from './cat-routing.js';
 export type { CliActiveWriterRecoveryState, CliDiagnostics, CliErrorReasonCode } from './cli-diagnostics.js';
 export type { BuiltinAccountClient } from './client-routing.js';
 export {
+  BUILTIN_ACCOUNT_CLIENT_FOR_ID,
   builtinAccountFamilyForClient,
   builtinAccountIdForClient,
   protocolForClient,

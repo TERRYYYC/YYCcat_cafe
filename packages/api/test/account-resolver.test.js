@@ -367,4 +367,39 @@ describe('account-resolver (4b unified runtime resolution)', () => {
     assert.equal(profile.mode, 'api_key');
     assert.equal(profile.apiKey, 'sk-real-installer-key');
   });
+
+  // ── Canonical OAuth account ids (Hub add-Anthropic-cat failure) ──
+  // deriveAccountId (routes/accounts.ts) slugs OAuth display names to canonical
+  // ids ('anthropic', 'openai', 'google') and BUILTIN_CLIENT_FOR_ID lists them
+  // as builtin, so the Hub shows them as selectable accounts. The resolver must
+  // recognize the same ids — both file-backed and as synthetic fallback —
+  // otherwise POST /api/cats fails with `provider "anthropic" not found`.
+
+  it('resolveByAccountRef resolves canonical oauth ids synthetically when absent from accounts', async () => {
+    const { resolveByAccountRef } = await import(`../dist/config/account-resolver.js?t=${Date.now()}-canon-syn`);
+    await writeCatalog({});
+
+    for (const [ref, client] of [
+      ['anthropic', 'anthropic'],
+      ['openai', 'openai'],
+      ['google', 'google'],
+    ]) {
+      const profile = resolveByAccountRef(projectRoot, ref);
+      assert.ok(profile, `canonical oauth ref "${ref}" must resolve to a synthetic builtin profile`);
+      assert.equal(profile.kind, 'builtin', `"${ref}" must be recognized as builtin`);
+      assert.equal(profile.client, client);
+      assert.equal(profile.authType, 'oauth');
+    }
+  });
+
+  it('resolveByAccountRef returns builtin profile with client for file-backed canonical oauth id', async () => {
+    const { resolveByAccountRef } = await import(`../dist/config/account-resolver.js?t=${Date.now()}-canon-file`);
+    await writeCatalog({ anthropic: { authType: 'oauth', models: ['claude-opus-5'] } });
+
+    const profile = resolveByAccountRef(projectRoot, 'anthropic');
+    assert.ok(profile);
+    assert.equal(profile.kind, 'builtin', 'file-backed canonical oauth account must be recognized as builtin');
+    assert.equal(profile.client, 'anthropic', 'profile.client must be derived for canonical oauth id');
+    assert.deepEqual(profile.models, ['claude-opus-5']);
+  });
 });

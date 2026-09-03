@@ -7,6 +7,7 @@
 import {
   type AccountConfig,
   type AccountProtocol,
+  BUILTIN_ACCOUNT_CLIENT_FOR_ID,
   type BuiltinAccountClient,
   builtinAccountFamilyForClient,
   builtinAccountIdForClient,
@@ -84,7 +85,7 @@ export function resolveAnthropicRuntimeProfile(
   // Single deterministic ref — NOT the discovery chain.
   if (!preferredAccountRef) {
     const accounts = readCatalogAccounts(projectRoot);
-    const hasRealAnthropicBuiltin = Object.entries(BUILTIN_ACCOUNT_MAP).some(
+    const hasRealAnthropicBuiltin = Object.entries(BUILTIN_ACCOUNT_CLIENT_FOR_ID).some(
       ([id, info]) => info === 'anthropic' && id in accounts,
     );
     if (!hasRealAnthropicBuiltin) {
@@ -101,21 +102,6 @@ export function resolveAnthropicRuntimeProfile(
   }
   return { id: runtime?.id ?? 'builtin_anthropic', mode: 'subscription' };
 }
-
-// Known builtin OAuth account refs — both legacy names and new naming convention.
-// clowder-ai#340: protocol is derived from client identity, no longer stored on accounts.
-const BUILTIN_ACCOUNT_MAP: Record<string, BuiltinAccountClient> = {
-  claude: 'anthropic',
-  builtin_anthropic: 'anthropic',
-  codex: 'openai',
-  builtin_openai: 'openai',
-  gemini: 'google',
-  builtin_google: 'google',
-  kimi: 'kimi',
-  builtin_kimi: 'kimi',
-  opencode: 'opencode',
-  builtin_opencode: 'opencode',
-};
 
 const GOOGLE_OWNED_DOMAINS = ['generativelanguage.googleapis.com', 'googleapis.com'];
 
@@ -142,7 +128,7 @@ export function resolveByAccountRef(projectRoot: string, accountRef: string): Ru
   if (account) return accountToRuntimeProfile(accountRef, account, projectRoot);
 
   // Synthetic builtin profile for known OAuth refs
-  const builtinClient = BUILTIN_ACCOUNT_MAP[accountRef];
+  const builtinClient = BUILTIN_ACCOUNT_CLIENT_FOR_ID[accountRef];
   const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
   if (builtinClient) {
     return {
@@ -176,7 +162,7 @@ export function resolveForClient(
     const preferred = accounts[preferredAccountRef];
     if (preferred) return accountToRuntimeProfile(preferredAccountRef, preferred, projectRoot);
     // Not in accounts — only allow synthetic builtin (fresh install with empty accounts).
-    const builtinClient = BUILTIN_ACCOUNT_MAP[preferredAccountRef];
+    const builtinClient = BUILTIN_ACCOUNT_CLIENT_FOR_ID[preferredAccountRef];
     const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
     if (builtinClient) {
       return {
@@ -213,7 +199,7 @@ export function resolveForClient(
   // (fresh install, test env with empty accounts)
   if (normalizedClient) {
     const wellKnownRef = builtinAccountIdForClient(normalizedClient);
-    const builtinClient = wellKnownRef ? BUILTIN_ACCOUNT_MAP[wellKnownRef] : undefined;
+    const builtinClient = wellKnownRef ? BUILTIN_ACCOUNT_CLIENT_FOR_ID[wellKnownRef] : undefined;
     const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
     if (builtinClient && wellKnownRef) {
       return {
@@ -251,7 +237,7 @@ function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoo
 
   // clowder-ai#340: Derive client and protocol solely from well-known account ID map.
   // account.protocol is retired — not read, not written.
-  const builtinClient = BUILTIN_ACCOUNT_MAP[ref];
+  const builtinClient = BUILTIN_ACCOUNT_CLIENT_FOR_ID[ref];
   const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
   const isOAuth = account.authType === 'oauth';
   const isBuiltin = !!builtinClient && isOAuth;

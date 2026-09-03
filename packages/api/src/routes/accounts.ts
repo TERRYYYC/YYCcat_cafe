@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { relative, resolve, win32 } from 'node:path';
-import type { AccountConfig } from '@cat-cafe/shared';
+import { type AccountConfig, BUILTIN_ACCOUNT_CLIENT_FOR_ID } from '@cat-cafe/shared';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { resolveCatCatalogPath } from '../config/cat-catalog-store.js';
@@ -22,28 +22,13 @@ import { redirectRuntimeProjectPath, resolvePersistentProjectPathDetailed } from
 import { resolveUserId } from '../utils/request-identity.js';
 
 // clowder-ai#340: Derive client identity from well-known account IDs, not stored protocol.
-const BUILTIN_CLIENT_FOR_ID: Record<string, string> = {
-  claude: 'anthropic',
-  codex: 'openai',
-  gemini: 'google',
-  kimi: 'kimi',
-  opencode: 'opencode',
-  // Canonical OAuth IDs (reachable via deriveAccountId slugging display names)
-  anthropic: 'anthropic',
-  openai: 'openai',
-  google: 'google',
-  // builtin_* prefixed (explicit reserved form):
-  builtin_anthropic: 'anthropic',
-  builtin_openai: 'openai',
-  builtin_google: 'google',
-  builtin_kimi: 'kimi',
-  builtin_opencode: 'opencode',
-};
+// Single source of truth shared with config/account-resolver.ts — a private copy
+// here once drifted from the resolver and broke Hub add-Anthropic-cat.
 
 /** Synthesize a ProviderProfileView-compatible object from AccountConfig. */
 function accountToView(id: string, account: AccountConfig, apiKeyPresent: boolean) {
   const isBuiltin = account.authType === 'oauth';
-  const builtinClient = BUILTIN_CLIENT_FOR_ID[id];
+  const builtinClient = BUILTIN_ACCOUNT_CLIENT_FOR_ID[id];
   const clientId = account.clientId ?? (isBuiltin ? builtinClient : undefined);
   return {
     id,

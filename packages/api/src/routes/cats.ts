@@ -50,6 +50,7 @@ import { createRuntimeCat, deleteRuntimeCat, updateRuntimeCat } from '../config/
 import { deleteRuntimeOverride, getRuntimeOverride, setRuntimeOverride } from '../config/session-strategy-overrides.js';
 import type { InvocationCapacitySnapshot } from '../domains/cats/services/agents/invocation/invocation-capacity-snapshot.js';
 import { resolveActiveProjectRoot } from '../utils/active-project-root.js';
+import { redirectRuntimeProjectPath } from '../utils/persistent-project-path.js';
 import { resolveHeaderUserId } from '../utils/request-identity.js';
 
 const colorSchema = z.object({
@@ -236,6 +237,19 @@ type UpdateCatRequestBody = z.infer<typeof updateCatSchema>;
 
 function resolveProjectRoot(): string {
   return resolveActiveProjectRoot();
+}
+
+/**
+ * Root for account/provider lookups — MUST match routes/accounts.ts.
+ *
+ * The accounts routes read and write accounts.json in the persistent workspace
+ * (redirectRuntimeProjectPath), while the cat catalog stays in the active
+ * runtime root. Validating a create/update against the raw runtime root made
+ * an account that the Hub had just listed invisible to POST /api/cats
+ * (`provider "anthropic" not found`) whenever the two roots diverged.
+ */
+async function resolveAccountsRoot(projectRoot: string): Promise<string> {
+  return (await redirectRuntimeProjectPath(projectRoot)) ?? projectRoot;
 }
 
 interface CatResponseMetadata {
@@ -786,15 +800,16 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         (body.clientId === 'opencode' && body.defaultModel && !body.defaultModel.includes('/')
           ? inferOpenCodeProviderFromModelName(body.defaultModel)
           : undefined);
+      const accountsRoot = await resolveAccountsRoot(projectRoot);
       await validateAccountBindingOrThrow(
-        projectRoot,
+        accountsRoot,
         body.clientId,
         accountRef,
         body.defaultModel,
         providerNameForValidation,
       );
       validateServiceTierMutationOrThrow(
-        projectRoot,
+        accountsRoot,
         body.clientId,
         accountRef ?? undefined,
         body.defaultModel,
@@ -1033,7 +1048,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           !isClientSwitch &&
           isExistingOpencode;
         await validateAccountBindingOrThrow(
-          projectRoot,
+          await resolveAccountsRoot(projectRoot),
           effectiveClient,
           effectiveAccountRef,
           effectiveDefaultModel,
@@ -1049,7 +1064,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
 
     try {
       validateServiceTierMutationOrThrow(
-        projectRoot,
+        await resolveAccountsRoot(projectRoot),
         effectiveClient,
         effectiveAccountRef,
         effectiveDefaultModel,
