@@ -402,4 +402,46 @@ describe('account-resolver (4b unified runtime resolution)', () => {
     assert.equal(profile.client, 'anthropic', 'profile.client must be derived for canonical oauth id');
     assert.deepEqual(profile.models, ['claude-opus-5']);
   });
+
+  // ── Canonical alias occupancy is NOT OAuth identity (review P2) ──
+  // Account ids are display-name slugs; a well-known id may be occupied by an
+  // account whose real identity is different. Occupancy alone must not grant
+  // builtin identity or suppress installer credential fallback.
+
+  it('api_key account occupying the "anthropic" id does not suppress installer fallback', async () => {
+    const { resolveAnthropicRuntimeProfile } = await import(
+      `../dist/config/account-resolver.js?t=${Date.now()}-occupy-apikey`
+    );
+    await writeCatalog({
+      anthropic: { authType: 'api_key', displayName: 'anthropic', models: ['claude-sonnet-4-6'] },
+      'installer-anthropic': { authType: 'api_key', displayName: 'Installer Anthropic' },
+    });
+    await writeCredentials({ 'installer-anthropic': { apiKey: 'sk-installer-real' } });
+
+    const profile = resolveAnthropicRuntimeProfile(projectRoot);
+    assert.equal(profile.id, 'installer-anthropic', 'api_key id squatting must not shadow installer credentials');
+    assert.equal(profile.mode, 'api_key');
+    assert.equal(profile.apiKey, 'sk-installer-real');
+  });
+
+  it('persisted clientId overrides the id→client map for canonical ids', async () => {
+    const { resolveAnthropicRuntimeProfile, resolveByAccountRef } = await import(
+      `../dist/config/account-resolver.js?t=${Date.now()}-persisted-client`
+    );
+    // OAuth account whose id slugs to "anthropic" but whose real client is OpenAI.
+    await writeCatalog({
+      anthropic: { authType: 'oauth', clientId: 'openai', displayName: 'anthropic' },
+      'installer-anthropic': { authType: 'api_key', displayName: 'Installer Anthropic' },
+    });
+    await writeCredentials({ 'installer-anthropic': { apiKey: 'sk-installer-still-reachable' } });
+
+    const profile = resolveByAccountRef(projectRoot, 'anthropic');
+    assert.ok(profile);
+    assert.equal(profile.client, 'openai', 'persisted clientId is authoritative over the id slug');
+
+    // And it is not a "real Anthropic builtin" either — installer fallback stays reachable.
+    const anthropicProfile = resolveAnthropicRuntimeProfile(projectRoot);
+    assert.equal(anthropicProfile.id, 'installer-anthropic');
+    assert.equal(anthropicProfile.apiKey, 'sk-installer-still-reachable');
+  });
 });

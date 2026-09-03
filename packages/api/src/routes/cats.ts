@@ -26,6 +26,7 @@ import {
   validateModelFormatForProvider,
   validateRuntimeProviderBinding,
 } from '../config/account-resolver.js';
+import { resolveAccountsRoot } from '../config/account-root.js';
 import {
   inheritFullyBlockedMcpCapabilitiesForNewCat,
   removeDeletedCatFromBlockedMcps,
@@ -50,7 +51,6 @@ import { createRuntimeCat, deleteRuntimeCat, updateRuntimeCat } from '../config/
 import { deleteRuntimeOverride, getRuntimeOverride, setRuntimeOverride } from '../config/session-strategy-overrides.js';
 import type { InvocationCapacitySnapshot } from '../domains/cats/services/agents/invocation/invocation-capacity-snapshot.js';
 import { resolveActiveProjectRoot } from '../utils/active-project-root.js';
-import { redirectRuntimeProjectPath } from '../utils/persistent-project-path.js';
 import { resolveHeaderUserId } from '../utils/request-identity.js';
 
 const colorSchema = z.object({
@@ -239,17 +239,16 @@ function resolveProjectRoot(): string {
   return resolveActiveProjectRoot();
 }
 
-/**
- * Root for account/provider lookups — MUST match routes/accounts.ts.
- *
- * The accounts routes read and write accounts.json in the persistent workspace
- * (redirectRuntimeProjectPath), while the cat catalog stays in the active
- * runtime root. Validating a create/update against the raw runtime root made
- * an account that the Hub had just listed invisible to POST /api/cats
- * (`provider "anthropic" not found`) whenever the two roots diverged.
- */
-async function resolveAccountsRoot(projectRoot: string): Promise<string> {
-  return (await redirectRuntimeProjectPath(projectRoot)) ?? projectRoot;
+/** Fail-closed account-root resolution for create/update validation — same
+ *  contract and failure semantics (400) as routes/accounts.ts. */
+async function resolveAccountsRootOrThrow(projectRoot: string): Promise<string> {
+  const accountsRoot = await resolveAccountsRoot(projectRoot);
+  if (!accountsRoot) {
+    throw new Error(
+      'accounts root unresolvable (invalid CAT_CAFE_RUNTIME_ROOT/CAT_CAFE_WORKSPACE_ROOT topology) — cannot validate account binding',
+    );
+  }
+  return accountsRoot;
 }
 
 interface CatResponseMetadata {
@@ -800,7 +799,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         (body.clientId === 'opencode' && body.defaultModel && !body.defaultModel.includes('/')
           ? inferOpenCodeProviderFromModelName(body.defaultModel)
           : undefined);
-      const accountsRoot = await resolveAccountsRoot(projectRoot);
+      const accountsRoot = await resolveAccountsRootOrThrow(projectRoot);
       await validateAccountBindingOrThrow(
         accountsRoot,
         body.clientId,
@@ -1048,7 +1047,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           !isClientSwitch &&
           isExistingOpencode;
         await validateAccountBindingOrThrow(
-          await resolveAccountsRoot(projectRoot),
+          await resolveAccountsRootOrThrow(projectRoot),
           effectiveClient,
           effectiveAccountRef,
           effectiveDefaultModel,
@@ -1064,7 +1063,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
 
     try {
       validateServiceTierMutationOrThrow(
-        await resolveAccountsRoot(projectRoot),
+        await resolveAccountsRootOrThrow(projectRoot),
         effectiveClient,
         effectiveAccountRef,
         effectiveDefaultModel,

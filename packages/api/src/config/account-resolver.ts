@@ -85,9 +85,16 @@ export function resolveAnthropicRuntimeProfile(
   // Single deterministic ref — NOT the discovery chain.
   if (!preferredAccountRef) {
     const accounts = readCatalogAccounts(projectRoot);
-    const hasRealAnthropicBuiltin = Object.entries(BUILTIN_ACCOUNT_CLIENT_FOR_ID).some(
-      ([id, info]) => info === 'anthropic' && id in accounts,
-    );
+    // Suppress installer fallback only for an ACTUAL Anthropic OAuth builtin:
+    // a display-name slug occupying a well-known id (api_key "anthropic", or an
+    // OAuth account whose persisted clientId is a different provider) must not
+    // shadow installer credentials.
+    const hasRealAnthropicBuiltin = Object.entries(BUILTIN_ACCOUNT_CLIENT_FOR_ID).some(([id, client]) => {
+      if (client !== 'anthropic') return false;
+      const stored = accounts[id];
+      if (!stored || stored.authType !== 'oauth') return false;
+      return deriveAccountClient(id, stored) === 'anthropic';
+    });
     if (!hasRealAnthropicBuiltin) {
       const installer = resolveForClient(projectRoot, 'anthropic', 'installer-anthropic');
       if (installer?.apiKey) {
@@ -101,6 +108,25 @@ export function resolveAnthropicRuntimeProfile(
     }
   }
   return { id: runtime?.id ?? 'builtin_anthropic', mode: 'subscription' };
+}
+
+const BUILTIN_CLIENT_SET = new Set<string>(['anthropic', 'openai', 'google', 'kimi', 'opencode']);
+
+/**
+ * Derive the builtin client identity of a stored account.
+ *
+ * Persisted clientId is authoritative: account ids are display-name slugs
+ * (deriveAccountId), so an id like "anthropic" may be occupied by an account
+ * whose real client is something else entirely. The id→client map is only a
+ * fallback for legacy entries created before clientId was persisted. An
+ * explicit non-builtin clientId grants no builtin identity at all.
+ */
+function deriveAccountClient(ref: string, account: AccountConfig): BuiltinAccountClient | null {
+  const persisted = account.clientId;
+  if (persisted) {
+    return BUILTIN_CLIENT_SET.has(persisted) ? (persisted as BuiltinAccountClient) : null;
+  }
+  return BUILTIN_ACCOUNT_CLIENT_FOR_ID[ref] ?? null;
 }
 
 const GOOGLE_OWNED_DOMAINS = ['generativelanguage.googleapis.com', 'googleapis.com'];
@@ -235,9 +261,10 @@ function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoo
   const credential = readCredential(ref, projectRoot);
   const apiKey = credential?.apiKey;
 
-  // clowder-ai#340: Derive client and protocol solely from well-known account ID map.
-  // account.protocol is retired — not read, not written.
-  const builtinClient = BUILTIN_ACCOUNT_CLIENT_FOR_ID[ref];
+  // clowder-ai#340: account.protocol is retired — not read, not written.
+  // Client identity comes from persisted clientId first, well-known id second
+  // (see deriveAccountClient — id slugs are not identity).
+  const builtinClient = deriveAccountClient(ref, account);
   const builtinProtocol = builtinClient ? protocolForClient(builtinClient) : null;
   const isOAuth = account.authType === 'oauth';
   const isBuiltin = !!builtinClient && isOAuth;

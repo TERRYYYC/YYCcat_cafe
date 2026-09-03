@@ -37,6 +37,7 @@ import {
   resolveForClient,
   validateRuntimeProviderBinding,
 } from '../../../../../config/account-resolver.js';
+import { resolveAccountsRoot } from '../../../../../config/account-root.js';
 import { resolveBoundAccountRefForCat } from '../../../../../config/cat-account-binding.js';
 import { buildCatGitIdentityEnv } from '../../../../../config/cat-git-identity.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
@@ -2524,18 +2525,28 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     // Every downstream account/config/provider decision consumes that same
     // value instead of re-reading a potentially stale catalog default.
     const defaultModel = invocationCapacitySnapshot?.model?.trim() || catConfig?.defaultModel?.trim() || undefined;
-    // Account resolution, proxy registration, and runtime config always use the
-    // runtime root (process.cwd()), NOT thread.projectPath.  catRegistry loads
-    // from the runtime root at startup — reading a divergent catalog (e.g. the
-    // dev worktree pointed to by thread.projectPath) misses runtime-only accounts.
+    // Proxy registration and runtime config always use the runtime root
+    // (process.cwd()), NOT thread.projectPath.  catRegistry loads from the
+    // runtime root at startup — reading a divergent catalog (e.g. the dev
+    // worktree pointed to by thread.projectPath) misses runtime-only state.
     // workingProjectRoot is still used for shared-state preflight + cat cwd.
     const projectRoot = resolveActiveProjectRoot(process.cwd());
+    // #1303 / F289 narrow slice: account reads MUST use the same persistent
+    // root contract as routes/accounts.ts and the create/update validation in
+    // routes/cats.ts — otherwise a binding that passed validation is
+    // unresolvable at dispatch. Fail closed on an unresolvable topology.
+    const accountsRoot = await resolveAccountsRoot(projectRoot);
+    if (!accountsRoot) {
+      throw new Error(
+        'accounts root unresolvable (invalid CAT_CAFE_RUNTIME_ROOT/CAT_CAFE_WORKSPACE_ROOT topology) — account bindings cannot be resolved',
+      );
+    }
     const effectiveAccountRef = resolveBoundAccountRefForCat(projectRoot, catId, catConfig);
     const resolveRuntimeAccount = async () => {
       if (!builtinClient) return null;
       // Yield to event loop so preflight warnings are delivered before account resolution.
       await Promise.resolve();
-      const runtime = resolveForClient(projectRoot, builtinClient, effectiveAccountRef);
+      const runtime = resolveForClient(accountsRoot, builtinClient, effectiveAccountRef);
       if (effectiveAccountRef && !runtime) {
         throw new Error(`bound account "${effectiveAccountRef}" not found`);
       }
