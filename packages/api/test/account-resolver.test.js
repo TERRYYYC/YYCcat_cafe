@@ -444,4 +444,66 @@ describe('account-resolver (4b unified runtime resolution)', () => {
     assert.equal(anthropicProfile.id, 'installer-anthropic');
     assert.equal(anthropicProfile.apiKey, 'sk-installer-still-reachable');
   });
+
+  // ── Auto-discovery must not hand out a foreign family's credential (re-review P1) ──
+
+  it('default binding skips a "claude" slug whose persisted clientId is a different family', async () => {
+    const { resolveAnthropicRuntimeProfile } = await import(
+      `../dist/config/account-resolver.js?t=${Date.now()}-foreign-slug`
+    );
+    // The well-known Anthropic id is occupied by an OpenAI api_key account.
+    await writeCatalog({
+      claude: { authType: 'api_key', clientId: 'openai', baseUrl: 'https://api.openai.com' },
+    });
+    await writeCredentials({ claude: { apiKey: 'sk-openai-secret' } });
+
+    const profile = resolveAnthropicRuntimeProfile(projectRoot);
+    assert.notEqual(profile.apiKey, 'sk-openai-secret', 'must NEVER hand the OpenAI key to the Anthropic runtime');
+    assert.equal(profile.mode, 'subscription', 'without any Anthropic credential this resolves to subscription');
+    assert.equal(profile.baseUrl, undefined, 'foreign baseUrl must not leak into the Anthropic profile');
+  });
+
+  it('default binding still honors a legacy "claude" entry without clientId (alias fallback)', async () => {
+    const { resolveAnthropicRuntimeProfile } = await import(
+      `../dist/config/account-resolver.js?t=${Date.now()}-legacy-alias`
+    );
+    await writeCatalog({ claude: { authType: 'api_key', displayName: 'Claude Key' } });
+    await writeCredentials({ claude: { apiKey: 'sk-legacy-anthropic' } });
+
+    const profile = resolveAnthropicRuntimeProfile(projectRoot);
+    assert.equal(profile.id, 'claude');
+    assert.equal(profile.apiKey, 'sk-legacy-anthropic');
+  });
+
+  it('explicit preferred ref remains a deliberate cross-protocol path', async () => {
+    const { resolveAnthropicRuntimeProfile } = await import(
+      `../dist/config/account-resolver.js?t=${Date.now()}-explicit-xproto`
+    );
+    // Third-party anthropic-protocol gateway bound explicitly (z-ai style).
+    await writeCatalog({
+      'my-gateway': { authType: 'api_key', clientId: 'anthropic', baseUrl: 'https://gw.example.com' },
+    });
+    await writeCredentials({ 'my-gateway': { apiKey: 'sk-gateway' } });
+
+    const profile = resolveAnthropicRuntimeProfile(projectRoot, 'my-gateway');
+    assert.equal(profile.id, 'my-gateway');
+    assert.equal(profile.apiKey, 'sk-gateway');
+  });
+
+  it('validateRuntimeProviderBinding fails closed on a non-builtin OAuth identity', async () => {
+    const { resolveByAccountRef, validateRuntimeProviderBinding } = await import(
+      `../dist/config/account-resolver.js?t=${Date.now()}-nonbuiltin-oauth`
+    );
+    await writeCatalog({ weird: { authType: 'oauth', clientId: 'not-a-builtin' } });
+
+    const profile = resolveByAccountRef(projectRoot, 'weird');
+    assert.ok(profile);
+    assert.equal(profile.client, undefined);
+    const error = validateRuntimeProviderBinding('anthropic', profile);
+    assert.match(
+      error ?? '',
+      /not a recognized builtin OAuth identity/,
+      'explicit but unresolvable OAuth identity must not pass as an anonymous builtin',
+    );
+  });
 });

@@ -32,12 +32,19 @@ import {
 } from '@cat-cafe/shared';
 import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import {
+  builtinCandidateIdsForClient,
   providerRequiresThreadWorkspace,
   resolveBuiltinClientForProvider,
   resolveForClient,
   validateRuntimeProviderBinding,
 } from '../../../../../config/account-resolver.js';
-import { resolveAccountsRoot } from '../../../../../config/account-root.js';
+import {
+  accountStoreConflictError,
+  accountsRootUnresolvableError,
+  resolveAccountStoreTopology,
+  selectAccountStoreForFamily,
+  selectAccountStoreForRef,
+} from '../../../../../config/account-root.js';
 import { resolveBoundAccountRefForCat } from '../../../../../config/cat-account-binding.js';
 import { buildCatGitIdentityEnv } from '../../../../../config/cat-git-identity.js';
 import { getCatModel } from '../../../../../config/cat-models.js';
@@ -2531,17 +2538,26 @@ export async function* invokeSingleCat(deps: InvocationDeps, params: InvocationP
     // worktree pointed to by thread.projectPath) misses runtime-only state.
     // workingProjectRoot is still used for shared-state preflight + cat cwd.
     const projectRoot = resolveActiveProjectRoot(process.cwd());
-    // #1303 / F289 narrow slice: account reads MUST use the same persistent
-    // root contract as routes/accounts.ts and the create/update validation in
-    // routes/cats.ts — otherwise a binding that passed validation is
-    // unresolvable at dispatch. Fail closed on an unresolvable topology.
-    const accountsRoot = await resolveAccountsRoot(projectRoot);
-    if (!accountsRoot) {
-      throw new Error(
-        'accounts root unresolvable (invalid CAT_CAFE_RUNTIME_ROOT/CAT_CAFE_WORKSPACE_ROOT topology) — account bindings cannot be resolved',
-      );
-    }
+    // #1303 / F289 Phase 0: account reads consume the same per-ref store
+    // verdict as create/update validation in routes/cats.ts — canonical-only,
+    // legacy-only (legacy installs stay readable), both-equal, or CONFLICT
+    // (fail closed, never guess). Topology failures also fail closed.
+    const accountTopology = await resolveAccountStoreTopology(projectRoot);
+    if (!accountTopology) throw accountsRootUnresolvableError();
     const effectiveAccountRef = resolveBoundAccountRefForCat(projectRoot, catId, catConfig);
+    const accountsRoot = (() => {
+      if (effectiveAccountRef) {
+        const selection = selectAccountStoreForRef(accountTopology, effectiveAccountRef);
+        if (selection.kind === 'conflict') throw accountStoreConflictError(effectiveAccountRef);
+        return selection.root;
+      }
+      if (builtinClient) {
+        const selection = selectAccountStoreForFamily(accountTopology, builtinCandidateIdsForClient(builtinClient));
+        if (selection.kind === 'conflict') throw accountStoreConflictError(selection.ref);
+        return selection.root;
+      }
+      return accountTopology.primaryRoot;
+    })();
     const resolveRuntimeAccount = async () => {
       if (!builtinClient) return null;
       // Yield to event loop so preflight warnings are delivered before account resolution.

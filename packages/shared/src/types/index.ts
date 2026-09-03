@@ -270,6 +270,7 @@ export {
   BUILTIN_ACCOUNT_CLIENT_FOR_ID,
   builtinAccountFamilyForClient,
   builtinAccountIdForClient,
+  isBuiltinAccountClient,
   protocolForClient,
 } from './client-routing.js';
 export type {

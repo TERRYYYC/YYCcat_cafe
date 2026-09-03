@@ -26,7 +26,12 @@ import {
   validateModelFormatForProvider,
   validateRuntimeProviderBinding,
 } from '../config/account-resolver.js';
-import { resolveAccountsRoot } from '../config/account-root.js';
+import {
+  accountStoreConflictError,
+  accountsRootUnresolvableError,
+  resolveAccountStoreTopology,
+  selectAccountStoreForRef,
+} from '../config/account-root.js';
 import {
   inheritFullyBlockedMcpCapabilitiesForNewCat,
   removeDeletedCatFromBlockedMcps,
@@ -239,16 +244,20 @@ function resolveProjectRoot(): string {
   return resolveActiveProjectRoot();
 }
 
-/** Fail-closed account-root resolution for create/update validation — same
- *  contract and failure semantics (400) as routes/accounts.ts. */
-async function resolveAccountsRootOrThrow(projectRoot: string): Promise<string> {
-  const accountsRoot = await resolveAccountsRoot(projectRoot);
-  if (!accountsRoot) {
-    throw new Error(
-      'accounts root unresolvable (invalid CAT_CAFE_RUNTIME_ROOT/CAT_CAFE_WORKSPACE_ROOT topology) — cannot validate account binding',
-    );
-  }
-  return accountsRoot;
+/** Fail-closed topology + per-ref store verdict for account validation — the
+ *  SAME contract primary dispatch consumes (invoke-single-cat). Divergent
+ *  runtime/workspace copies of the ref fail closed instead of guessing. */
+async function resolveAccountStoreRootOrThrow(
+  projectRoot: string,
+  accountRef: string | null | undefined,
+): Promise<string> {
+  const topology = await resolveAccountStoreTopology(projectRoot);
+  if (!topology) throw accountsRootUnresolvableError();
+  const trimmed = accountRef?.trim();
+  if (!trimmed) return topology.primaryRoot;
+  const selection = selectAccountStoreForRef(topology, trimmed);
+  if (selection.kind === 'conflict') throw accountStoreConflictError(trimmed);
+  return selection.root;
 }
 
 interface CatResponseMetadata {
@@ -799,7 +808,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         (body.clientId === 'opencode' && body.defaultModel && !body.defaultModel.includes('/')
           ? inferOpenCodeProviderFromModelName(body.defaultModel)
           : undefined);
-      const accountsRoot = await resolveAccountsRootOrThrow(projectRoot);
+      const accountsRoot = await resolveAccountStoreRootOrThrow(projectRoot, accountRef);
       await validateAccountBindingOrThrow(
         accountsRoot,
         body.clientId,
@@ -1047,7 +1056,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           !isClientSwitch &&
           isExistingOpencode;
         await validateAccountBindingOrThrow(
-          await resolveAccountsRootOrThrow(projectRoot),
+          await resolveAccountStoreRootOrThrow(projectRoot, effectiveAccountRef),
           effectiveClient,
           effectiveAccountRef,
           effectiveDefaultModel,
@@ -1061,15 +1070,20 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
       }
     }
 
+    // Resolve the account store only when this PATCH actually mutates
+    // serviceTier — an unrelated field update must not fail on topology.
+    const serviceTierTouched = body.cli != null && Object.hasOwn(body.cli, 'serviceTier');
     try {
-      validateServiceTierMutationOrThrow(
-        await resolveAccountsRootOrThrow(projectRoot),
-        effectiveClient,
-        effectiveAccountRef,
-        effectiveDefaultModel,
-        body.cli?.serviceTier,
-        body.cli != null && Object.hasOwn(body.cli, 'serviceTier'),
-      );
+      if (serviceTierTouched && body.cli?.serviceTier != null) {
+        validateServiceTierMutationOrThrow(
+          await resolveAccountStoreRootOrThrow(projectRoot, effectiveAccountRef),
+          effectiveClient,
+          effectiveAccountRef,
+          effectiveDefaultModel,
+          body.cli?.serviceTier,
+          serviceTierTouched,
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       reply.status(400);

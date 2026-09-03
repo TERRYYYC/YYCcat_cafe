@@ -10387,3 +10387,245 @@ describe('invokeSingleCat audit events (P1 fix)', () => {
 // Guide matching now happens at routing layer (route-serial/route-parallel)
 // and is injected via SystemPromptBuilder + guide-interaction skill.
 // New tests for the routing-layer matching should be added separately.
+
+// ── #1303 / F289 Phase 0: account-store compatibility at dispatch ──────────
+// Real invokeSingleCat + stub service. Unlike the F302 case above, these tests
+// DELETE the file-level CAT_CAFE_GLOBAL_CONFIG_ROOT override inside each case:
+// that env var makes every store read resolve to one shared root and therefore
+// hides exactly the runtime/workspace split this suite must exercise.
+describe('invokeSingleCat account-store compatibility (#1303)', { concurrency: false }, () => {
+  let invokeCompat;
+  const dummyL0 = async ({ catId }) => `# Dummy L0 for ${catId}\nTest-only stub.`;
+
+  before(async () => {
+    const mod = await import('../dist/domains/cats/services/agents/invocation/invoke-single-cat.js');
+    const { resolveInvocationCapacitySnapshot } = await import(
+      '../dist/domains/cats/services/agents/invocation/invocation-capacity-snapshot.js'
+    );
+    const raw = mod.invokeSingleCat;
+    invokeCompat = (deps, params) =>
+      (async function* () {
+        const service = params.service.contextCapability
+          ? params.service
+          : {
+              ...params.service,
+              contextCapability: () => ({
+                provider: 'test',
+                carrier: 'test_stream',
+                reportsRuntimeWindow: true,
+                authoritativeUsage: true,
+                nativeWindowControl: false,
+                nativeCompressionControl: false,
+                observesCompression: false,
+                reason: 'account-store compat test double',
+              }),
+            };
+        const capacitySnapshot =
+          params.capacitySnapshot ??
+          (await resolveInvocationCapacitySnapshot({
+            catId: params.catId,
+            threadId: params.threadId,
+            service,
+            sessionChainStore: deps.sessionChainStore,
+          }));
+        yield* raw(deps, { ...params, service, capacitySnapshot });
+      })();
+  });
+
+  function makeCompatDeps(devRoot) {
+    let counter = 0;
+    return {
+      registry: {
+        create: () => ({ invocationId: `inv-acct-${++counter}`, callbackToken: `tok-acct-${counter}` }),
+        verify: async () => ({ ok: false, reason: 'unknown_invocation' }),
+      },
+      sessionManager: {
+        get: async () => undefined,
+        getOrCreate: async () => ({}),
+        store: async () => {},
+        delete: async () => {},
+        resolveWorkingDirectory: () => '/tmp/test',
+      },
+      threadStore: {
+        get: async () => ({ projectPath: devRoot, createdBy: 'user-acct' }),
+        updateParticipantActivity: async () => {},
+      },
+      apiUrl: 'http://127.0.0.1:3004',
+      contextEpochOwner: new ContextEpochOwner(new InMemoryContextEpochStore()),
+    };
+  }
+
+  const COMPAT_ENV_KEYS = [
+    'CAT_CAFE_GLOBAL_CONFIG_ROOT',
+    'CAT_CAFE_CONFIG_ROOT',
+    'CAT_CAFE_RUNTIME_ROOT',
+    'CAT_CAFE_WORKSPACE_ROOT',
+    'CAT_CAFE_SKIP_HOMEDIR_MIGRATION',
+  ];
+
+  /** Run one scenario: register an opencode cat bound to `accountRef`, lay the
+   *  stores out per `layout`, run the real invokeSingleCat, return messages +
+   *  the callbackEnv the stub service received (null when never invoked). */
+  async function runScenario({ accountRef, layout, breakTopology = false }) {
+    const savedEnv = {};
+    for (const key of COMPAT_ENV_KEYS) savedEnv[key] = process.env[key];
+    const { resetMigrationState } = await import('../dist/config/catalog-accounts.js');
+
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'acct-compat-invoke-rt-'));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'acct-compat-invoke-ws-'));
+    const devRoot = await mkdtemp(join(tmpdir(), 'acct-compat-invoke-dev-'));
+    await mkdir(join(runtimeRoot, '.cat-cafe'), { recursive: true });
+    await mkdir(join(workspaceRoot, '.cat-cafe'), { recursive: true });
+    await writeFile(join(devRoot, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n', 'utf-8');
+
+    const writeStore = async (root, accounts, credentials) => {
+      await writeFile(join(root, '.cat-cafe', 'accounts.json'), JSON.stringify(accounts, null, 2), 'utf-8');
+      if (credentials) {
+        await writeFile(join(root, '.cat-cafe', 'credentials.json'), JSON.stringify(credentials, null, 2), 'utf-8');
+      }
+    };
+    await writeStore(runtimeRoot, layout.runtime?.accounts ?? {}, layout.runtime?.credentials);
+    await writeStore(workspaceRoot, layout.workspace?.accounts ?? {}, layout.workspace?.credentials);
+
+    const registrySnapshot = catRegistry.getAllConfigs();
+    const originalConfig = catRegistry.tryGet('opencode')?.config;
+    assert.ok(originalConfig, 'opencode template cat must exist in the registry');
+    const boundCatId = 'opencode-acct-compat';
+    catRegistry.register(boundCatId, {
+      ...originalConfig,
+      id: boundCatId,
+      mentionPatterns: [`@${boundCatId}`],
+      clientId: 'opencode',
+      accountRef,
+      defaultModel: 'custom-model',
+      provider: 'custom',
+    });
+
+    const seenOptions = [];
+    const service = {
+      l0CompilerFn: dummyL0,
+      async *invoke(_prompt, options) {
+        seenOptions.push(options ?? {});
+        yield { type: 'done', catId: boundCatId, timestamp: Date.now() };
+      },
+    };
+
+    try {
+      delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+      delete process.env.CAT_CAFE_CONFIG_ROOT;
+      process.env.CAT_CAFE_SKIP_HOMEDIR_MIGRATION = '1';
+      // CONFIG_ROOT pins resolveActiveProjectRoot to runtimeRoot regardless of
+      // the isolated CAT_TEMPLATE_PATH the file-level helper installed.
+      process.env.CAT_CAFE_CONFIG_ROOT = runtimeRoot;
+      process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+      if (breakTopology) delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+      else process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+      resetMigrationState();
+
+      let msgs = [];
+      let thrown = null;
+      try {
+        msgs = await collect(
+          invokeCompat(makeCompatDeps(devRoot), {
+            catId: boundCatId,
+            service,
+            prompt: 'account-store compat probe',
+            userId: 'user-acct',
+            threadId: `thread-acct-${accountRef}-${breakTopology ? 'broken' : 'ok'}`,
+            isLastCat: true,
+          }),
+        );
+      } catch (err) {
+        thrown = err;
+      }
+      return { msgs, thrown, seenOptions };
+    } finally {
+      for (const key of COMPAT_ENV_KEYS) {
+        if (savedEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedEnv[key];
+      }
+      resetMigrationState();
+      catRegistry.reset();
+      for (const [id, config] of Object.entries(registrySnapshot)) {
+        catRegistry.register(id, config);
+      }
+      await rmWithRetry(runtimeRoot);
+      await rmWithRetry(workspaceRoot);
+      await rmWithRetry(devRoot);
+    }
+  }
+
+  const failureText = ({ msgs, thrown }) =>
+    [thrown ? String(thrown) : '', ...msgs.filter((m) => m.type === 'error').map((m) => String(m.error))].join(' | ');
+
+  it('workspace-only account: real dispatch resolves it and hands the service its key', async () => {
+    const result = await runScenario({
+      accountRef: 'team-anthropic',
+      layout: {
+        workspace: {
+          accounts: { 'team-anthropic': { authType: 'api_key', clientId: 'opencode', models: ['custom-model'] } },
+          credentials: { 'team-anthropic': { apiKey: 'sk-workspace-key' } },
+        },
+      },
+    });
+    assert.ok(
+      result.msgs.some((m) => m.type === 'done'),
+      `workspace-only binding must dispatch, got: ${failureText(result)}`,
+    );
+    assert.equal(result.seenOptions.length, 1, 'service must be invoked exactly once');
+    assert.equal(
+      result.seenOptions[0].callbackEnv?.ANTHROPIC_API_KEY,
+      'sk-workspace-key',
+      'service must receive the workspace-stored credential',
+    );
+  });
+
+  it('legacy-only account: runtime-store binding stays dispatchable (no forced cutover)', async () => {
+    const result = await runScenario({
+      accountRef: 'legacy-acme',
+      layout: {
+        runtime: {
+          accounts: { 'legacy-acme': { authType: 'api_key', clientId: 'opencode', models: ['custom-model'] } },
+          credentials: { 'legacy-acme': { apiKey: 'sk-legacy-key' } },
+        },
+      },
+    });
+    assert.ok(
+      result.msgs.some((m) => m.type === 'done'),
+      `legacy-only binding must stay dispatchable, got: ${failureText(result)}`,
+    );
+    assert.equal(
+      result.seenOptions[0]?.callbackEnv?.ANTHROPIC_API_KEY,
+      'sk-legacy-key',
+      'service must receive the legacy-store credential',
+    );
+  });
+
+  it('divergent copies: dispatch fails loud and never invokes the service', async () => {
+    const entry = { authType: 'api_key', clientId: 'opencode', models: ['custom-model'] };
+    const result = await runScenario({
+      accountRef: 'torn-acct',
+      layout: {
+        runtime: { accounts: { 'torn-acct': entry }, credentials: { 'torn-acct': { apiKey: 'sk-runtime' } } },
+        workspace: { accounts: { 'torn-acct': entry }, credentials: { 'torn-acct': { apiKey: 'sk-workspace' } } },
+      },
+    });
+    assert.equal(result.seenOptions.length, 0, 'service must NOT be invoked on a store conflict');
+    assert.match(failureText(result), /divergent content/i, 'conflict must surface a loud, specific error');
+  });
+
+  it('invalid topology: dispatch fails loud and never invokes the service', async () => {
+    const result = await runScenario({
+      accountRef: 'team-anthropic',
+      breakTopology: true,
+      layout: {
+        workspace: {
+          accounts: { 'team-anthropic': { authType: 'api_key', clientId: 'opencode', models: ['custom-model'] } },
+          credentials: { 'team-anthropic': { apiKey: 'sk-workspace-key' } },
+        },
+      },
+    });
+    assert.equal(result.seenOptions.length, 0, 'service must NOT be invoked on an unresolvable topology');
+    assert.match(failureText(result), /accounts root unresolvable/i);
+  });
+});

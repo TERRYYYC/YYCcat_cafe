@@ -44,6 +44,11 @@ export const BUILTIN_ACCOUNT_CLIENT_FOR_ID: Record<string, BuiltinAccountClient>
   builtin_opencode: 'opencode',
 };
 
+/** Runtime type guard mirroring BuiltinAccountClient — single source, no drifting copies. */
+export function isBuiltinAccountClient(value: string): value is BuiltinAccountClient {
+  return value === 'anthropic' || value === 'openai' || value === 'google' || value === 'kimi' || value === 'opencode';
+}
+
 export function builtinAccountFamilyForClient(client: ClientId): BuiltinAccountClient | null {
   switch (client) {
     case 'anthropic':

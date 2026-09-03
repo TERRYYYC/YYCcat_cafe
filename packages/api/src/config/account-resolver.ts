@@ -12,6 +12,7 @@ import {
   builtinAccountFamilyForClient,
   builtinAccountIdForClient,
   type ClientId,
+  isBuiltinAccountClient,
   protocolForClient,
 } from '@cat-cafe/shared';
 import { readCatalogAccounts } from './catalog-accounts.js';
@@ -26,6 +27,8 @@ export interface RuntimeProviderProfile {
   authType: 'oauth' | 'api_key';
   kind?: ProviderProfileKind;
   client?: BuiltinAccountClient;
+  /** Raw persisted clientId (may be non-builtin); `client` is the derived builtin identity. */
+  persistedClientId?: string;
   protocol?: AccountProtocol;
   baseUrl?: string;
   apiKey?: string;
@@ -67,10 +70,15 @@ export function resolveAnthropicRuntimeProfile(
   projectRoot: string,
   preferredAccountRef?: string,
 ): AnthropicRuntimeProfile {
-  // Deterministic binding: use explicit ref or well-known builtin.
-  // Never walk the discovery chain — prevents installer-* credential hijack (502 regression).
-  const accountRef = preferredAccountRef ?? builtinAccountIdForClient('anthropic') ?? 'claude';
-  const runtime = resolveForClient(projectRoot, 'anthropic', accountRef);
+  // Explicit refs are deliberate user bindings and stay explicit (the only
+  // supported cross-protocol path). Without one, the DEFAULT binding is
+  // deterministic AND identity-checked: fixed candidate order, never
+  // installer-* (502 hijack guard), and a foreign-client account squatting a
+  // well-known id ("claude" with clientId "openai") is skipped instead of
+  // handing out its credential.
+  const runtime = preferredAccountRef
+    ? resolveForClient(projectRoot, 'anthropic', preferredAccountRef)
+    : resolveAnthropicDefaultBinding(projectRoot);
   if (runtime?.apiKey) {
     return {
       id: runtime.id,
@@ -110,7 +118,32 @@ export function resolveAnthropicRuntimeProfile(
   return { id: runtime?.id ?? 'builtin_anthropic', mode: 'subscription' };
 }
 
-const BUILTIN_CLIENT_SET = new Set<string>(['anthropic', 'openai', 'google', 'kimi', 'opencode']);
+/**
+ * Default (no explicit ref) Anthropic binding: deterministic candidate order,
+ * identity-checked, and NEVER installer-* — the 502 regression showed that a
+ * credential-preferring discovery walk lets installer keys hijack a real OAuth
+ * builtin. Foreign-client slugs are skipped, legacy entries without clientId
+ * keep the alias fallback, and a fresh install resolves to the synthetic
+ * builtin subscription profile.
+ */
+function resolveAnthropicDefaultBinding(projectRoot: string): RuntimeProviderProfile {
+  const accounts = readCatalogAccounts(projectRoot);
+  const candidates = builtinCandidateIdsForClient('anthropic').filter((id) => !id.startsWith('installer-'));
+  for (const id of candidates) {
+    const stored = accounts[id];
+    if (!stored) continue;
+    if (stored.clientId && deriveAccountClient(id, stored) !== 'anthropic') continue;
+    return accountToRuntimeProfile(id, stored, projectRoot);
+  }
+  // Fresh install / only foreign squatters: synthetic builtin subscription.
+  return {
+    id: builtinAccountIdForClient('anthropic') ?? 'claude',
+    authType: 'oauth',
+    kind: 'builtin',
+    client: 'anthropic',
+    protocol: 'anthropic',
+  };
+}
 
 /**
  * Derive the builtin client identity of a stored account.
@@ -124,9 +157,16 @@ const BUILTIN_CLIENT_SET = new Set<string>(['anthropic', 'openai', 'google', 'ki
 function deriveAccountClient(ref: string, account: AccountConfig): BuiltinAccountClient | null {
   const persisted = account.clientId;
   if (persisted) {
-    return BUILTIN_CLIENT_SET.has(persisted) ? (persisted as BuiltinAccountClient) : null;
+    return isBuiltinAccountClient(persisted) ? persisted : null;
   }
   return BUILTIN_ACCOUNT_CLIENT_FOR_ID[ref] ?? null;
+}
+
+/** Deterministic discovery candidate ids for a builtin client family.
+ *  Single source shared by resolveForClient and dispatch store selection. */
+export function builtinCandidateIdsForClient(client: BuiltinAccountClient): string[] {
+  const wellKnownId = builtinAccountIdForClient(client);
+  return [...(wellKnownId ? [wellKnownId] : []), `builtin_${client}`, `installer-${client}`];
 }
 
 const GOOGLE_OWNED_DOMAINS = ['generativelanguage.googleapis.com', 'googleapis.com'];
@@ -209,14 +249,19 @@ export function resolveForClient(
   if (normalizedClient) {
     const wellKnownId = builtinAccountIdForClient(normalizedClient);
     if (!wellKnownId) return null;
-    const candidateIds = [wellKnownId, `builtin_${normalizedClient}`, `installer-${normalizedClient}`];
+    const candidateIds = builtinCandidateIdsForClient(normalizedClient);
     let firstMatch: RuntimeProviderProfile | null = null;
     for (const id of candidateIds) {
-      if (accounts[id]) {
-        const profile = accountToRuntimeProfile(id, accounts[id], projectRoot);
-        if (profile.authType === 'api_key' && profile.apiKey) return profile;
-        firstMatch ??= profile;
-      }
+      const stored = accounts[id];
+      if (!stored) continue;
+      // Auto-discovery never hands out a candidate whose persisted clientId
+      // belongs to a different family — id slugs are not identity. Only legacy
+      // entries without a clientId keep the alias fallback. Explicit
+      // cross-protocol bindings remain available via the preferred-ref path.
+      if (stored.clientId && deriveAccountClient(id, stored) !== normalizedClient) continue;
+      const profile = accountToRuntimeProfile(id, stored, projectRoot);
+      if (profile.authType === 'api_key' && profile.apiKey) return profile;
+      firstMatch ??= profile;
     }
     if (firstMatch) return firstMatch;
   }
@@ -273,6 +318,7 @@ function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoo
     authType: account.authType,
     kind: isBuiltin ? 'builtin' : 'api_key',
     ...(isBuiltin && builtinClient ? { client: builtinClient } : {}),
+    ...(account.clientId ? { persistedClientId: account.clientId } : {}),
     ...(builtinProtocol ? { protocol: builtinProtocol } : {}),
     ...(account.baseUrl ? { baseUrl: account.baseUrl } : {}),
     ...(apiKey ? { apiKey } : {}),
@@ -311,6 +357,12 @@ export function validateRuntimeProviderBinding(
   const expectedClient = resolveBuiltinClientForProvider(clientId);
   if (expectedClient && profile.authType === 'oauth' && profile.client && profile.client !== expectedClient) {
     return `bound provider profile "${profile.id}" is incompatible with client "${clientId}"`;
+  }
+  // Fail closed on an OAuth account whose persisted clientId is not a
+  // recognized builtin: its identity is explicit but unresolvable, so the
+  // binding must not silently pass as an anonymous builtin.
+  if (profile.authType === 'oauth' && !profile.client && profile.persistedClientId) {
+    return `bound provider profile "${profile.id}" declares client "${profile.persistedClientId}" which is not a recognized builtin OAuth identity`;
   }
   // Protocol matching removed: protocol is now provider-determined, not an
   // account-level attribute. Runtime env injection uses provider directly.

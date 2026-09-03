@@ -91,7 +91,7 @@ function createProjectRoot(prefix) {
   return projectRoot;
 }
 
-function writeWorkspaceAccounts(workspaceRoot, accounts) {
+function writeAccountsStore(workspaceRoot, accounts) {
   writeFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), JSON.stringify(accounts, null, 2), 'utf-8');
 }
 
@@ -127,15 +127,18 @@ function injectCat(app, method, url, payload) {
   });
 }
 
-/** Mirror of the primary dispatch resolution sequence in invoke-single-cat.ts:
- *  same root contract + same resolveForClient call. A binding accepted by
- *  POST/PATCH must resolve to a non-null account here. */
+/** Fast-layer mirror of the primary dispatch store selection (the SAME
+ *  exported verdict functions invoke-single-cat consumes — not a re-derivation).
+ *  The full wiring (real invokeSingleCat + stub service) is covered in
+ *  invoke-single-cat.test.js "account-store compatibility at dispatch". */
 async function resolveLikeDispatch(runtimeProjectRoot, builtinClient, accountRef) {
-  const { resolveAccountsRoot } = await import('../dist/config/account-root.js');
+  const { resolveAccountStoreTopology, selectAccountStoreForRef } = await import('../dist/config/account-root.js');
   const { resolveForClient } = await import('../dist/config/account-resolver.js');
-  const accountsRoot = await resolveAccountsRoot(runtimeProjectRoot);
-  assert.ok(accountsRoot, 'dispatch account-root contract must resolve in a valid topology');
-  return resolveForClient(accountsRoot, builtinClient, accountRef);
+  const topology = await resolveAccountStoreTopology(runtimeProjectRoot);
+  assert.ok(topology, 'dispatch account-store topology must resolve in a valid topology');
+  const selection = selectAccountStoreForRef(topology, accountRef);
+  assert.notEqual(selection.kind, 'conflict', 'binding accepted by the route must not be a store conflict');
+  return resolveForClient(selection.root, builtinClient, accountRef);
 }
 
 describe('cats routes account-root parity', { concurrency: false }, () => {
@@ -197,7 +200,7 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
     // The account exists ONLY in the workspace accounts store — exactly what
     // routes/accounts.ts produces when the Hub saves a login while the API
     // serves from the runtime checkout.
-    writeWorkspaceAccounts(workspaceRoot, {
+    writeAccountsStore(workspaceRoot, {
       'team-anthropic': {
         authType: 'api_key',
         clientId: 'anthropic',
@@ -240,7 +243,7 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
     process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
     process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
 
-    writeWorkspaceAccounts(workspaceRoot, {
+    writeAccountsStore(workspaceRoot, {
       'team-anthropic': {
         authType: 'api_key',
         clientId: 'anthropic',
@@ -282,6 +285,61 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
     const dispatched = await resolveLikeDispatch(runtimeRoot, 'anthropic', 'team-anthropic-2');
     assert.ok(dispatched, 'binding accepted by PATCH must be resolvable on the dispatch path');
     assert.equal(dispatched.id, 'team-anthropic-2');
+    await app.close();
+  });
+
+  it('POST /api/cats fails closed (400) when the account has divergent runtime/workspace copies', async () => {
+    const runtimeRoot = createProjectRoot('cats-acct-conflict-rt-');
+    const workspaceRoot = createProjectRoot('cats-acct-conflict-ws-');
+    process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+    process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+    process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+
+    // Same id, divergent content — authority is a reconciler decision (F289),
+    // create must not silently pick the workspace copy.
+    writeAccountsStore(workspaceRoot, {
+      'team-anthropic': { authType: 'api_key', clientId: 'anthropic', baseUrl: 'https://a', models: ['m'] },
+    });
+    writeAccountsStore(runtimeRoot, {
+      'team-anthropic': { authType: 'api_key', clientId: 'anthropic', baseUrl: 'https://b', models: ['m'] },
+    });
+
+    const app = await buildApp();
+    const res = await injectCat(app, 'POST', '/api/cats', baseCreatePayload({ accountRef: 'team-anthropic' }));
+    assert.equal(res.statusCode, 400, `expected conflict to fail closed, got ${res.statusCode}: ${res.body}`);
+    assert.match(JSON.parse(res.body).error, /divergent content/i);
+    await app.close();
+  });
+
+  it('PATCH of an unrelated field succeeds even when the topology is unresolvable', async () => {
+    // First create the cat in a healthy single-checkout topology.
+    const projectRoot = createProjectRoot('cats-acct-unrelated-');
+    process.env.CAT_TEMPLATE_PATH = join(projectRoot, 'cat-template.json');
+    process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = projectRoot;
+
+    const app = await buildApp();
+    const createRes = await injectCat(
+      app,
+      'POST',
+      '/api/cats',
+      baseCreatePayload({ catId: 'probe-unrelated', mentionPatterns: ['@probe-unrelated'] }),
+    );
+    assert.equal(createRes.statusCode, 201, `create precondition failed: ${createRes.body}`);
+
+    // Now break the topology: runtime declared, workspace missing. A PATCH
+    // that touches neither account nor provider nor serviceTier must not be
+    // blocked by account-store resolution.
+    process.env.CAT_CAFE_RUNTIME_ROOT = projectRoot;
+    delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+
+    const patchRes = await injectCat(app, 'PATCH', '/api/cats/probe-unrelated', {
+      displayName: '改个名字',
+    });
+    assert.equal(
+      patchRes.statusCode,
+      200,
+      `unrelated PATCH must not require account topology, got ${patchRes.statusCode}: ${patchRes.body}`,
+    );
     await app.close();
   });
 
