@@ -127,7 +127,7 @@ function normalizeModelAliases(value: unknown): Record<string, string> | undefin
   return normalized.length > 0 ? Object.fromEntries(normalized) : undefined;
 }
 
-function canonicalizeAccount(account: AccountConfig): {
+export function canonicalizeAccount(account: AccountConfig): {
   authType: 'oauth' | 'api_key';
   baseUrl?: string;
   displayName?: string;

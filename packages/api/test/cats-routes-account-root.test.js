@@ -321,9 +321,12 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
     );
     assert.equal(createRes.statusCode, 201, `create precondition failed: ${createRes.body}`);
 
-    // Now break the topology: runtime declared, workspace missing. A PATCH
-    // that touches neither account nor provider nor serviceTier must not be
-    // blocked by account-store resolution.
+    // Now break the topology: runtime declared, workspace missing, and NO
+    // global root (GLOBAL would legitimately collapse this to a healthy
+    // single store under the new precedence — deleting it is what actually
+    // exercises the lazy gate). A PATCH that touches neither account nor
+    // provider nor serviceTier must not be blocked by account-store resolution.
+    delete process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
     process.env.CAT_CAFE_RUNTIME_ROOT = projectRoot;
     delete process.env.CAT_CAFE_WORKSPACE_ROOT;
 
@@ -334,6 +337,30 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
       patchRes.statusCode,
       200,
       `unrelated PATCH must not require account topology, got ${patchRes.statusCode}: ${patchRes.body}`,
+    );
+    await app.close();
+  });
+
+  it('antigravity create succeeds under a broken topology (no account store needed)', async () => {
+    const runtimeRoot = createProjectRoot('cats-acct-agy-');
+    process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+    // Broken topology: runtime declared, workspace and global missing. An
+    // antigravity create carries no account binding, so validation must not
+    // resolve the account store at all (re-review P2 lazy gate).
+    process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+    delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+
+    const app = await buildApp();
+    const res = await injectCat(app, 'POST', '/api/cats', {
+      ...baseCreatePayload({ catId: 'probe-agy', mentionPatterns: ['@probe-agy'] }),
+      clientId: 'antigravity',
+      accountRef: undefined,
+      defaultModel: 'gemini-3.5-flash',
+    });
+    assert.equal(
+      res.statusCode,
+      201,
+      `antigravity create must not require account topology, got ${res.statusCode}: ${res.body}`,
     );
     await app.close();
   });

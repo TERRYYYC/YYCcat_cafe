@@ -39,7 +39,7 @@ function resolveMcpWorkspaceRoot(workingDirectory?: string): string {
   return process.cwd();
 }
 
-function normalizeKimiApiBaseUrl(baseUrl: string): string {
+export function normalizeKimiApiBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim();
   if (!trimmed) return trimmed;
   try {

@@ -305,10 +305,14 @@ function normalizeToClient(clientOrProtocol: string): BuiltinAccountClient | nul
   }
 }
 
-function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoot?: string): RuntimeProviderProfile {
-  const credential = readCredential(ref, projectRoot);
-  const apiKey = credential?.apiKey;
-
+/** Pure profile construction from already-resolved material — the single
+ *  source for both the migration-aware reader path (accountToRuntimeProfile)
+ *  and the read-only snapshot path (account-root). Never touches disk/env. */
+export function buildRuntimeProfile(
+  ref: string,
+  account: AccountConfig,
+  apiKey: string | undefined,
+): RuntimeProviderProfile {
   // clowder-ai#340: account.protocol is retired — not read, not written.
   // Client identity comes from persisted clientId first, well-known id second
   // (see deriveAccountClient — id slugs are not identity).
@@ -331,6 +335,20 @@ function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoo
       : {}),
     ...(account.envVars && Object.keys(account.envVars).length > 0 ? { envVars: { ...account.envVars } } : {}),
   };
+}
+
+/** Migration-aware wrapper: reads the credential through the store readers.
+ *  Snapshot-based consumers use buildRuntimeProfile directly instead. */
+function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoot?: string): RuntimeProviderProfile {
+  return buildRuntimeProfile(ref, account, readCredential(ref, projectRoot)?.apiKey);
+}
+
+/** Family identity of a resolved profile: persisted clientId is authoritative
+ *  (non-builtin → null = unknown), well-known id map is the legacy fallback. */
+export function profileFamilyIdentity(profile: RuntimeProviderProfile): BuiltinAccountClient | null {
+  const persisted = profile.persistedClientId;
+  if (persisted) return isBuiltinAccountClient(persisted) ? persisted : null;
+  return BUILTIN_ACCOUNT_CLIENT_FOR_ID[profile.id] ?? null;
 }
 
 // ── Validation helpers (moved from provider-binding-compat.ts, F136 Phase 4d) ──

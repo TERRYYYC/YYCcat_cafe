@@ -129,6 +129,63 @@ describe('LlmAIProvider credential safety', { concurrency: false }, () => {
     assert.equal(init.headers['x-api-key'], 'sk-gateway-key');
   });
 
+  it('structurally broken account entry: fails closed with ZERO network calls', async () => {
+    // Reviewer repro: a bare string where the account object should be, plus a
+    // well-formed credential — the sentinel key must never reach the wire.
+    makeGlobalStore({ claude: 'not-an-account' }, { claude: { apiKey: 'sk-sentinel-must-not-leak' } });
+    registerGameCat('game-broken-shape');
+
+    const provider = new LlmAIProvider('game-broken-shape');
+    await assert.rejects(() => provider.generateSpeech('say hi'), /malformed/);
+    assert.equal(fetchMock.mock.callCount(), 0, 'a shape-invalid entry must cause zero network traffic');
+  });
+
+  it('explicit foreign api_key binding WITHOUT baseUrl: fails closed with ZERO network calls', async () => {
+    // Reviewer repro: deliberately bound cross-protocol account with no custom
+    // endpoint — its key must not be sent to the official Anthropic domain.
+    makeGlobalStore(
+      { 'my-openai': { authType: 'api_key', clientId: 'openai' } },
+      { 'my-openai': { apiKey: 'sk-openai-explicit' } },
+    );
+    registerGameCat('game-foreign-explicit', 'my-openai');
+
+    const provider = new LlmAIProvider('game-foreign-explicit');
+    await assert.rejects(
+      () => provider.generateSpeech('say hi'),
+      /refusing to send its key to the official endpoint/,
+      'a foreign key without a custom baseUrl must never target the official domain',
+    );
+    assert.equal(fetchMock.mock.callCount(), 0);
+  });
+
+  it('explicit same-family api_key without baseUrl still uses the official endpoint', async () => {
+    makeGlobalStore(
+      { 'my-anthropic': { authType: 'api_key', clientId: 'anthropic' } },
+      { 'my-anthropic': { apiKey: 'sk-real-anthropic' } },
+    );
+    registerGameCat('game-same-family', 'my-anthropic');
+
+    const provider = new LlmAIProvider('game-same-family');
+    await provider.generateSpeech('say hi');
+    assert.equal(fetchMock.mock.callCount(), 1);
+    const [url, init] = fetchMock.mock.calls[0].arguments;
+    assert.equal(url, 'https://api.anthropic.com/v1/messages');
+    assert.equal(init.headers['x-api-key'], 'sk-real-anthropic');
+  });
+
+  it('gateway base already containing /v1 is not double-versioned', async () => {
+    makeGlobalStore(
+      { 'my-gw-v1': { authType: 'api_key', clientId: 'anthropic', baseUrl: 'https://gw.example.com/v1' } },
+      { 'my-gw-v1': { apiKey: 'sk-gw-v1' } },
+    );
+    registerGameCat('game-gw-v1', 'my-gw-v1');
+
+    const provider = new LlmAIProvider('game-gw-v1');
+    await provider.generateSpeech('say hi');
+    const [url] = fetchMock.mock.calls[0].arguments;
+    assert.equal(url, 'https://gw.example.com/v1/messages', 'versioned gateway base must not double the version');
+  });
+
   it('no resolvable credential: throws before any fetch', async () => {
     makeGlobalStore({}, {});
     registerGameCat('game-no-key');

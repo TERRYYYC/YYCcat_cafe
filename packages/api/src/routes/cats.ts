@@ -21,8 +21,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import {
   builtinAccountIdForClient,
+  type RuntimeProviderProfile,
   resolveBuiltinClientForProvider,
-  resolveByAccountRef,
   validateModelFormatForProvider,
   validateRuntimeProviderBinding,
 } from '../config/account-resolver.js';
@@ -30,7 +30,7 @@ import {
   accountStoreConflictError,
   accountsRootUnresolvableError,
   resolveAccountStoreTopology,
-  selectAccountStoreForRef,
+  resolveVerdictedRefProfile,
 } from '../config/account-root.js';
 import {
   inheritFullyBlockedMcpCapabilitiesForNewCat,
@@ -244,22 +244,6 @@ function resolveProjectRoot(): string {
   return resolveActiveProjectRoot();
 }
 
-/** Fail-closed topology + per-ref store verdict for account validation — the
- *  SAME contract primary dispatch consumes (invoke-single-cat). Divergent
- *  runtime/workspace copies of the ref fail closed instead of guessing. */
-async function resolveAccountStoreRootOrThrow(
-  projectRoot: string,
-  accountRef: string | null | undefined,
-): Promise<string> {
-  const topology = await resolveAccountStoreTopology(projectRoot);
-  if (!topology) throw accountsRootUnresolvableError();
-  const trimmed = accountRef?.trim();
-  if (!trimmed) return topology.primaryRoot;
-  const selection = selectAccountStoreForRef(topology, trimmed);
-  if (selection.kind === 'conflict' || selection.kind === 'invalid') throw accountStoreConflictError(selection);
-  return selection.root;
-}
-
 interface CatResponseMetadata {
   roster: RosterEntry | null;
 }
@@ -462,8 +446,24 @@ function buildEffectiveAccountRefResolver() {
   return async (cat: CatConfig): Promise<string | undefined> => resolveBoundAccountRefForCat('', cat.id, cat);
 }
 
+/** Lazy pure-pipeline profile resolver: topology + per-ref verdict + profile
+ *  from the verdicted snapshot (config/account-root). Resolved ONLY when a
+ *  validation path actually needs the store — an antigravity create or an
+ *  unrelated PATCH must not fail on a broken topology (re-review P2). */
+type LazyProfileResolver = (ref: string) => Promise<RuntimeProviderProfile | null>;
+
+function makeLazyProfileResolver(projectRoot: string): LazyProfileResolver {
+  return async (ref: string) => {
+    const topology = await resolveAccountStoreTopology(projectRoot);
+    if (!topology) throw accountsRootUnresolvableError();
+    const { selection, profile } = resolveVerdictedRefProfile(topology, ref);
+    if (selection.kind === 'conflict' || selection.kind === 'invalid') throw accountStoreConflictError(selection);
+    return profile;
+  };
+}
+
 async function validateAccountBindingOrThrow(
-  projectRoot: string,
+  resolveProfile: LazyProfileResolver,
   client: ClientId,
   accountRef?: string | null,
   defaultModel?: string | null,
@@ -478,7 +478,7 @@ async function validateAccountBindingOrThrow(
     throw new Error(`client "${client}" requires a provider binding`);
   }
   if (!trimmedAccountRef) return;
-  const runtimeProfile = resolveByAccountRef(projectRoot, trimmedAccountRef);
+  const runtimeProfile = await resolveProfile(trimmedAccountRef);
   if (!runtimeProfile) {
     throw new Error(`provider "${trimmedAccountRef}" not found`);
   }
@@ -499,17 +499,17 @@ async function validateAccountBindingOrThrow(
   }
 }
 
-function validateServiceTierMutationOrThrow(
-  projectRoot: string,
+async function validateServiceTierMutationOrThrow(
+  resolveProfile: LazyProfileResolver,
   client: ClientId,
   accountRef: string | undefined,
   defaultModel: string | undefined | null,
   serviceTier: CliPatch['serviceTier'],
   touched: boolean,
-): void {
+): Promise<void> {
   if (!touched || serviceTier == null) return;
 
-  const runtimeProfile = accountRef ? resolveByAccountRef(projectRoot, accountRef) : null;
+  const runtimeProfile = accountRef ? await resolveProfile(accountRef) : null;
   const resolution = resolveCodexSpeed({
     clientId: client,
     authType: runtimeProfile?.authType,
@@ -808,16 +808,16 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
         (body.clientId === 'opencode' && body.defaultModel && !body.defaultModel.includes('/')
           ? inferOpenCodeProviderFromModelName(body.defaultModel)
           : undefined);
-      const accountsRoot = await resolveAccountStoreRootOrThrow(projectRoot, accountRef);
+      const resolveProfile = makeLazyProfileResolver(projectRoot);
       await validateAccountBindingOrThrow(
-        accountsRoot,
+        resolveProfile,
         body.clientId,
         accountRef,
         body.defaultModel,
         providerNameForValidation,
       );
-      validateServiceTierMutationOrThrow(
-        accountsRoot,
+      await validateServiceTierMutationOrThrow(
+        resolveProfile,
         body.clientId,
         accountRef ?? undefined,
         body.defaultModel,
@@ -1056,7 +1056,7 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
           !isClientSwitch &&
           isExistingOpencode;
         await validateAccountBindingOrThrow(
-          await resolveAccountStoreRootOrThrow(projectRoot, effectiveAccountRef),
+          makeLazyProfileResolver(projectRoot),
           effectiveClient,
           effectiveAccountRef,
           effectiveDefaultModel,
@@ -1075,8 +1075,8 @@ export const catsRoutes: FastifyPluginAsync<CatsRoutesOptions> = async (app, opt
     const serviceTierTouched = body.cli != null && Object.hasOwn(body.cli, 'serviceTier');
     try {
       if (serviceTierTouched && body.cli?.serviceTier != null) {
-        validateServiceTierMutationOrThrow(
-          await resolveAccountStoreRootOrThrow(projectRoot, effectiveAccountRef),
+        await validateServiceTierMutationOrThrow(
+          makeLazyProfileResolver(projectRoot),
           effectiveClient,
           effectiveAccountRef,
           effectiveDefaultModel,

@@ -12,10 +12,11 @@
  */
 
 import { catRegistry } from '@cat-cafe/shared';
-import type { BuiltinAccountClient } from '../../../../config/account-resolver.js';
+import { type BuiltinAccountClient, profileFamilyIdentity } from '../../../../config/account-resolver.js';
 import { resolveRuntimeAccountProfile } from '../../../../config/account-root.js';
 import { resolveBoundAccountRefForCat } from '../../../../config/cat-account-binding.js';
 import { getCatModel } from '../../../../config/cat-models.js';
+import { buildLlmEndpoint } from '../../../../config/llm-provider-endpoints.js';
 import type { AIActionResponse, AIProvider } from '../game/werewolf/WerewolfAIPlayer.js';
 
 const LLM_TIMEOUT_MS = 10_000;
@@ -87,19 +88,33 @@ export class LlmAIProvider implements AIProvider {
     const boundRef = entry ? resolveBoundAccountRefForCat(process.cwd(), this.catId, entry.config) : undefined;
     const resolution = await resolveRuntimeAccountProfile(process.cwd(), client, boundRef);
     const apiKey = resolution.kind === 'ok' ? resolution.profile.apiKey : undefined;
-    if (!apiKey) {
+    if (resolution.kind !== 'ok' || !apiKey) {
       throw new Error(
         `No ${client} API key resolvable for cat "${this.catId}" — bind an account with a credential in Hub > account settings`,
       );
     }
-    const baseUrl = resolution.kind === 'ok' ? resolution.profile.baseUrl : undefined;
-    return { apiKey, ...(baseUrl ? { baseUrl: baseUrl.replace(/\/+$/, '') } : {}) };
+    const profile = resolution.profile;
+    const baseUrl = profile.baseUrl?.trim() || undefined;
+    if (profile.authType === 'api_key') {
+      // The official default endpoint is reserved for keys provably belonging
+      // to this family. An explicitly bound cross-protocol/unknown api_key
+      // account must carry its own baseUrl — otherwise we would send a foreign
+      // key to the official domain (credential disclosure). Fail before fetch.
+      const identity = profileFamilyIdentity(profile);
+      if (identity !== client && !baseUrl) {
+        throw new Error(
+          `account "${profile.id}" is not provably a ${client} credential (clientId: ${profile.persistedClientId ?? '(none)'}) ` +
+            'and has no custom baseUrl — refusing to send its key to the official endpoint',
+        );
+      }
+    }
+    return { apiKey, ...(baseUrl ? { baseUrl } : {}) };
   }
 
   private async callAnthropic(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
     const { apiKey, baseUrl } = await this.resolveCredential('anthropic');
 
-    const resp = await fetch(`${baseUrl ?? 'https://api.anthropic.com'}/v1/messages`, {
+    const resp = await fetch(buildLlmEndpoint('anthropic', baseUrl), {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -126,7 +141,7 @@ export class LlmAIProvider implements AIProvider {
   private async callOpenAI(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
     const { apiKey, baseUrl } = await this.resolveCredential('openai');
 
-    const resp = await fetch(`${baseUrl ?? 'https://api.openai.com/v1'}/chat/completions`, {
+    const resp = await fetch(buildLlmEndpoint('openai', baseUrl), {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -152,18 +167,15 @@ export class LlmAIProvider implements AIProvider {
   private async callGoogle(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
     const { apiKey, baseUrl } = await this.resolveCredential('google');
 
-    const resp = await fetch(
-      `${baseUrl ?? 'https://generativelanguage.googleapis.com'}/v1beta/models/${this.model}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 256 },
-        }),
-        signal,
-      },
-    );
+    const resp = await fetch(`${buildLlmEndpoint('google', baseUrl, this.model)}?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 256 },
+      }),
+      signal,
+    });
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => '');
@@ -177,7 +189,7 @@ export class LlmAIProvider implements AIProvider {
   private async callKimi(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
     const { apiKey, baseUrl } = await this.resolveCredential('kimi');
 
-    const resp = await fetch(`${baseUrl ?? 'https://api.moonshot.ai/v1'}/chat/completions`, {
+    const resp = await fetch(buildLlmEndpoint('kimi', baseUrl), {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

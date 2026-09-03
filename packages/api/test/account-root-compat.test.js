@@ -142,6 +142,131 @@ describe('account-store compatibility verdict', { concurrency: false }, () => {
     assert.equal(sel.reason, 'torn');
   });
 
+  it('embedded catalog accounts fill per-ref gaps even when accounts.json exists', async () => {
+    // Real migration semantics are per-ref: an accounts.json that lacks the
+    // ref must not hide an embedded pre-migration entry from the verdict.
+    writeStore(workspaceRoot, { unrelated: { authType: 'oauth' } });
+    writeStore(runtimeRoot, {});
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'cat-catalog.json'),
+      JSON.stringify({ version: 2, accounts: { emb: { authType: 'oauth' } } }, null, 2),
+      'utf-8',
+    );
+    const sel = selectAccountStoreForRef(await topology(), 'emb');
+    assert.equal(sel.kind, 'ok', 'per-ref embedded fallback must apply with accounts.json present');
+    assert.equal(sel.origin, 'canonical');
+  });
+
+  it('divergent EMBEDDED copies fail closed even when both accounts.json are empty', async () => {
+    // Reviewer repro: empty accounts.json on both sides, embedded "anthropic"
+    // baseUrl differs, credentials equal — the verdict must compare the
+    // effective merge view, not only the external file.
+    const cred = { anthropic: { apiKey: 'sk-same' } };
+    writeStore(workspaceRoot, {}, cred);
+    writeStore(runtimeRoot, {}, cred);
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'cat-catalog.json'),
+      JSON.stringify({ version: 2, accounts: { anthropic: { authType: 'api_key', baseUrl: 'https://a' } } }, null, 2),
+      'utf-8',
+    );
+    writeFileSync(
+      join(runtimeRoot, '.cat-cafe', 'cat-catalog.json'),
+      JSON.stringify({ version: 2, accounts: { anthropic: { authType: 'api_key', baseUrl: 'https://b' } } }, null, 2),
+      'utf-8',
+    );
+    const sel = selectAccountStoreForRef(await topology(), 'anthropic');
+    assert.equal(sel.kind, 'conflict', 'embedded divergence must not be bypassed by a second source selection');
+  });
+
+  it('structurally broken account entry is INVALID, never a usable profile', async () => {
+    // Reviewer repro: a string where an account object should be, plus a
+    // well-formed credential — must be INVALID, never ok-with-key.
+    writeStore(workspaceRoot, { claude: 'not-an-account' }, { claude: { apiKey: 'sk-should-never-leak' } });
+    writeStore(runtimeRoot, {});
+    const sel = selectAccountStoreForRef(await topology(), 'claude');
+    assert.equal(sel.kind, 'invalid', 'shape failure must fail closed');
+    await assert.rejects(
+      () => resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', undefined),
+      /malformed/,
+      'family resolution must fail loud on a structurally broken candidate',
+    );
+  });
+
+  it('non-string apiKey and malformed embedded container are INVALID', async () => {
+    writeStore(workspaceRoot, { acme: { authType: 'api_key', clientId: 'anthropic' } }, { acme: { apiKey: 12345 } });
+    writeStore(runtimeRoot, {});
+    const numericKey = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(numericKey.kind, 'invalid', 'a numeric secret must not pass shape validation');
+
+    writeStore(workspaceRoot, {}, {});
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'cat-catalog.json'),
+      JSON.stringify({ version: 2, accounts: ['not', 'a', 'map'] }, null, 2),
+      'utf-8',
+    );
+    const badContainer = selectAccountStoreForRef(await topology(), 'anything');
+    assert.equal(badContainer.kind, 'invalid', 'a malformed embedded accounts container must be INVALID');
+  });
+
+  it('store-semantic equality: trailing slash, whitespace and model order/dupes are equivalent', async () => {
+    // Reviewer repro: these are equivalent per catalog-accounts canonical
+    // semantics and must resolve both-equal, not conflict.
+    writeStore(
+      workspaceRoot,
+      {
+        acme: {
+          authType: 'api_key',
+          clientId: 'anthropic',
+          baseUrl: 'https://gw/v1',
+          displayName: 'GW',
+          models: ['a', 'b'],
+        },
+      },
+      { acme: { apiKey: 'sk-same' } },
+    );
+    writeStore(
+      runtimeRoot,
+      {
+        acme: {
+          authType: 'api_key',
+          clientId: 'anthropic',
+          baseUrl: 'https://gw/v1/',
+          displayName: ' GW ',
+          models: ['b', 'a', 'a'],
+        },
+      },
+      { acme: { apiKey: 'sk-same' } },
+    );
+    const sel = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(sel.kind, 'ok', 'catalog-canonical-equivalent entries must not be a conflict');
+    assert.equal(sel.origin, 'both-equal');
+  });
+
+  it('clientId divergence is a REAL conflict even when everything else matches', async () => {
+    const cred = { acme: { apiKey: 'sk-same' } };
+    writeStore(workspaceRoot, { acme: { authType: 'api_key', clientId: 'anthropic' } }, cred);
+    writeStore(runtimeRoot, { acme: { authType: 'api_key', clientId: 'openai' } }, cred);
+    const sel = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(sel.kind, 'conflict', 'identity-bearing clientId divergence must fail closed');
+  });
+
+  it('GLOBAL_CONFIG_ROOT with surrounding whitespace resolves to one consistent store', async () => {
+    const globalRoot = makeRoot('acct-compat-global-ws-');
+    writeStore(
+      globalRoot,
+      { acme: { authType: 'api_key', clientId: 'anthropic', models: ['m'] } },
+      {
+        acme: { apiKey: 'sk-global' },
+      },
+    );
+    process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = `  ${globalRoot}  `;
+    delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+
+    const resolution = await resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', 'acme');
+    assert.equal(resolution.kind, 'ok', 'whitespace in the env var must not split verdict and profile roots');
+    assert.equal(resolution.profile.apiKey, 'sk-global');
+  });
+
   it('malformed store file is INVALID, never absent', async () => {
     writeStore(workspaceRoot, { acme: { authType: 'api_key', clientId: 'anthropic' } });
     writeFileSync(join(runtimeRoot, '.cat-cafe', 'accounts.json'), '{ not json', 'utf-8');
