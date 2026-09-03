@@ -294,6 +294,14 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
         ...((body.displayName ?? body.name) ? { displayName: body.displayName ?? body.name } : {}),
         ...(body.envVars && Object.keys(body.envVars).length > 0 ? { envVars: body.envVars } : {}),
       };
+      // Re-review P1: a new api_key account must carry a persisted identity —
+      // account ids are display-name slugs, so without clientId a fresh
+      // account named "claude" would impersonate a legacy builtin alias and
+      // its key could be sent to an official provider domain.
+      if (account.authType === 'api_key' && !body.clientId?.trim()) {
+        reply.status(400);
+        return { error: 'api_key accounts require an explicit clientId (persisted provider identity)' };
+      }
       const existingAccounts = readCatalogAccounts(projectRoot);
       const profileId = deriveAccountId(
         body.displayName ?? body.name ?? body.provider ?? 'custom',

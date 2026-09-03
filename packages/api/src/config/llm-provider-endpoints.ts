@@ -43,6 +43,9 @@ export function buildLlmEndpoint(protocol: LlmEndpointProtocol, baseUrl: string 
   } catch {
     throw new Error(`invalid ${protocol} base URL "${base}" — refusing to build an endpoint from it`);
   }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`invalid ${protocol} base URL "${base}" — only http(s) endpoints are allowed`);
+  }
 
   const { version, resource } = PROTOCOL_PATHS[protocol];
   const basePath = parsed.pathname.replace(/\/+$/, '');

@@ -48,7 +48,8 @@ import {
   deriveAccountClient,
   type RuntimeProviderProfile,
 } from './account-resolver.js';
-import { canonicalizeAccount } from './catalog-accounts.js';
+import { canonicalizeAccount, parseLegacyProviderProfiles, parseLegacyProviderSecrets } from './catalog-accounts.js';
+import { globalConfigRootEnv } from './global-config-root.js';
 
 export interface AccountStoreTopology {
   /** Canonical root — the store account writes resolve to. */
@@ -68,7 +69,7 @@ export async function resolveAccountStoreTopology(projectRoot: string): Promise<
   // Highest precedence: a configured global root collapses everything to one
   // store (upstream #1303 workaround). This is the single interpretation
   // point for the env var — snapshots and profiles all flow from this root.
-  const globalRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT?.trim();
+  const globalRoot = globalConfigRootEnv();
   if (globalRoot) {
     return { primaryRoot: resolve(globalRoot), legacyRoot: null };
   }
@@ -116,15 +117,27 @@ function isStringRecord(value: unknown): value is Record<string, string> {
  *  unknown extra fields are tolerated, but every known field must have the
  *  right type and authType is mandatory — a structurally broken entry must
  *  become INVALID, never a usable profile that leaks a credential. */
-/** Known stored authType values: 'subscription' is the pre-clowder-ai#340
- *  legacy spelling still present in real stores; downstream treats any
- *  non-api_key value as subscription-style, so it stays readable. */
-const KNOWN_AUTH_TYPES = new Set(['oauth', 'api_key', 'subscription']);
+/** Normalize stored authType at the typed boundary, exactly as the catalog
+ *  migration does (normalizeLegacyAuthType): legacy 'subscription'/'builtin'
+ *  spellings become 'oauth' so the OAuth family guards actually run and a
+ *  subscription-vs-oauth pair compares equal; anything else is INVALID. */
+function normalizeStoredAuthType(value: unknown): AccountConfig['authType'] | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'api_key') return 'api_key';
+  if (normalized === 'oauth' || normalized === 'subscription' || normalized === 'builtin') return 'oauth';
+  return null;
+}
 
 function validateAccountShape(value: unknown): AccountConfig | null {
   if (!isPlainObject(value)) return null;
-  if (typeof value.authType !== 'string' || !KNOWN_AUTH_TYPES.has(value.authType)) return null;
-  if (value.clientId !== undefined && typeof value.clientId !== 'string') return null;
+  const authType = normalizeStoredAuthType(value.authType);
+  if (!authType) return null;
+  if (value.clientId !== undefined && (typeof value.clientId !== 'string' || value.clientId.trim() === '')) {
+    // A blank persisted clientId is an explicit-but-empty identity, not a
+    // legacy "field absent" alias — refuse rather than let it fall through.
+    return null;
+  }
   if (value.baseUrl !== undefined && typeof value.baseUrl !== 'string') return null;
   if (value.displayName !== undefined && typeof value.displayName !== 'string') return null;
   if (value.models !== undefined) {
@@ -132,7 +145,7 @@ function validateAccountShape(value: unknown): AccountConfig | null {
   }
   if (value.modelAliases !== undefined && !isStringRecord(value.modelAliases)) return null;
   if (value.envVars !== undefined && !isStringRecord(value.envVars)) return null;
-  return value as unknown as AccountConfig;
+  return { ...value, authType } as unknown as AccountConfig;
 }
 
 interface CredentialSnapshot {
@@ -141,10 +154,14 @@ interface CredentialSnapshot {
 }
 
 /** Runtime shape validation for a stored credential entry: must be an object
- *  and any secret present must be a string (a numeric/array apiKey is INVALID). */
+ *  and every known CredentialEntry field must have the right type (a numeric
+ *  apiKey, non-string tokens or a non-number expiresAt are INVALID). */
 function validateCredentialShape(value: unknown): CredentialSnapshot | null {
   if (!isPlainObject(value)) return null;
   if (value.apiKey !== undefined && typeof value.apiKey !== 'string') return null;
+  if (value.accessToken !== undefined && typeof value.accessToken !== 'string') return null;
+  if (value.refreshToken !== undefined && typeof value.refreshToken !== 'string') return null;
+  if (value.expiresAt !== undefined && typeof value.expiresAt !== 'number') return null;
   return { ...(typeof value.apiKey === 'string' ? { apiKey: value.apiKey } : {}), raw: value };
 }
 
@@ -193,6 +210,23 @@ function readStoreEntrySnapshot(root: string, ref: string): StoreEntrySnapshot {
     }
   }
 
+  // Oldest layer: provider-profiles.json — the remaining migration input
+  // (parsed with the SAME exported parser the migration writer uses, so the
+  // effective legacy view is complete without materializing anything).
+  const legacyProfilesPath = resolve(dir, 'provider-profiles.json');
+  if (!account && !invalidFile && existsSync(legacyProfilesPath)) {
+    const legacyRead = readJsonMap(legacyProfilesPath);
+    if (legacyRead.state === 'invalid') invalidFile = legacyRead.file;
+    else if (legacyRead.state === 'ok') {
+      const parsed = parseLegacyProviderProfiles(legacyRead.value)[ref];
+      if (parsed !== undefined) {
+        const validated = validateAccountShape(parsed);
+        if (!validated) invalidFile = legacyProfilesPath;
+        else account = validated;
+      }
+    }
+  }
+
   let credential: CredentialSnapshot | undefined;
   const credentialsPath = resolve(dir, 'credentials.json');
   const credentialsRead = readJsonMap(credentialsPath);
@@ -201,6 +235,17 @@ function readStoreEntrySnapshot(root: string, ref: string): StoreEntrySnapshot {
     const validated = validateCredentialShape(credentialsRead.value[ref]);
     if (!validated) invalidFile ??= credentialsPath;
     else credential = validated;
+  }
+
+  // Legacy secrets fill the per-ref credential gap the same way.
+  const legacySecretsPath = resolve(dir, 'provider-profiles.secrets.local.json');
+  if (!credential && !invalidFile && existsSync(legacySecretsPath)) {
+    const secretsRead = readJsonMap(legacySecretsPath);
+    if (secretsRead.state === 'invalid') invalidFile ??= secretsRead.file;
+    else if (secretsRead.state === 'ok') {
+      const apiKey = parseLegacyProviderSecrets(secretsRead.value)[ref];
+      if (apiKey !== undefined) credential = { apiKey, raw: { apiKey } };
+    }
   }
 
   return { account, credential, invalidFile };
@@ -342,7 +387,11 @@ export function resolveVerdictedRefProfile(
 ): { selection: AccountStoreSelection; profile: RuntimeProviderProfile | null } {
   const verdict = verdictForRef(topology, ref);
   if (verdict.selection.kind === 'ok') {
-    return { selection: verdict.selection, profile: profileFromVerdict(ref, verdict) };
+    // Credential-only material (ok verdict without an account entry) resolves
+    // synthetically for well-known ids — the SAME semantics the runtime
+    // resolver applies, so route validation and dispatch cannot diverge.
+    const profile = profileFromVerdict(ref, verdict) ?? syntheticProfileForRef(ref);
+    return { selection: verdict.selection, profile };
   }
   if (verdict.selection.kind === 'absent') {
     return { selection: verdict.selection, profile: syntheticProfileForRef(ref) };

@@ -12,6 +12,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSy
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { AccountConfig } from '@cat-cafe/shared';
+import { globalConfigRootEnv } from './global-config-root.js';
 import { assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
@@ -41,7 +42,7 @@ const INSTALLER_ACCOUNT_REFS = new Set([
 ]);
 
 function resolveGlobalRoot(projectRoot?: string): string {
-  const envRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+  const envRoot = globalConfigRootEnv();
   if (envRoot) return resolve(envRoot);
   if (projectRoot) return resolve(projectRoot);
   return homedir();
@@ -272,20 +273,16 @@ function mergeIntoGlobal(
 
 // ── Legacy provider-profiles.json → accounts.json migration ──
 
-/** Migrate legacy provider-profiles.json + secrets from a given root into global accounts. */
-function migrateLegacyFrom(
-  root: string,
-  projectRoot?: string,
-  opts?: { shouldImportAccount?: (ref: string, account: AccountConfig) => boolean },
-): void {
-  const metaPath = resolve(root, CONFIG_SUBDIR, 'provider-profiles.json');
-  if (!existsSync(metaPath)) return;
-  const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+/** PURE parser for legacy provider-profiles.json content (v1/v2/v3) — shared
+ *  by the migration writer and the read-only account-store snapshot so the
+ *  effective legacy view has exactly one semantics. */
+export function parseLegacyProviderProfiles(meta: unknown): Record<string, AccountConfig> {
+  const metaObj = (meta ?? {}) as Record<string, unknown>;
   // v2/v3: flat array of profiles.  v1: nested { providers: { <client>: { profiles: [...] } } }.
-  const rawProviders = meta?.providers ?? meta?.profiles;
+  const rawProviders = metaObj.providers ?? metaObj.profiles;
   let providers: Array<Record<string, unknown>>;
   if (Array.isArray(rawProviders)) {
-    providers = rawProviders;
+    providers = rawProviders as Array<Record<string, unknown>>;
   } else if (rawProviders != null && typeof rawProviders === 'object') {
     providers = [];
     for (const [, val] of Object.entries(rawProviders as Record<string, unknown>)) {
@@ -304,7 +301,6 @@ function migrateLegacyFrom(
   } else {
     providers = [];
   }
-  if (providers.length === 0) return;
 
   const accounts: Record<string, AccountConfig> = {};
   for (const p of providers) {
@@ -315,16 +311,56 @@ function migrateLegacyFrom(
     const models = normalizeModels(Array.isArray(p.models) ? p.models.map(String) : undefined);
     const modelAliases = normalizeModelAliases(p.modelAliases);
     // clowder-ai#340: protocol not migrated — derived at runtime from well-known account IDs.
-    const account: AccountConfig = {
+    accounts[id] = {
       authType: inferLegacyAuthType(p),
       ...(displayName ? { displayName } : {}),
       ...(baseUrl ? { baseUrl } : {}),
       ...(models ? { models } : {}),
       ...(modelAliases ? { modelAliases } : {}),
     };
+  }
+  return accounts;
+}
+
+/** PURE parser for legacy provider-profiles.secrets.local.json (v1/v2/v3):
+ *  id → apiKey. Shared with the read-only snapshot. */
+export function parseLegacyProviderSecrets(secretsMeta: unknown): Record<string, string> {
+  const metaObj = (secretsMeta ?? {}) as Record<string, unknown>;
+  let profileSecrets: Record<string, Record<string, unknown>> = {};
+  if (metaObj.profiles && typeof metaObj.profiles === 'object') {
+    profileSecrets = metaObj.profiles as Record<string, Record<string, unknown>>;
+  } else if (metaObj.providers && typeof metaObj.providers === 'object') {
+    for (const clientSecrets of Object.values(metaObj.providers as Record<string, unknown>)) {
+      if (typeof clientSecrets === 'object' && clientSecrets !== null) {
+        Object.assign(profileSecrets, clientSecrets as Record<string, Record<string, unknown>>);
+      }
+    }
+  }
+  const secrets: Record<string, string> = {};
+  for (const [id, secret] of Object.entries(profileSecrets)) {
+    if (secret && typeof secret === 'object' && typeof (secret as Record<string, unknown>).apiKey === 'string') {
+      secrets[id] = String((secret as Record<string, unknown>).apiKey);
+    }
+  }
+  return secrets;
+}
+
+/** Migrate legacy provider-profiles.json + secrets from a given root into global accounts. */
+function migrateLegacyFrom(
+  root: string,
+  projectRoot?: string,
+  opts?: { shouldImportAccount?: (ref: string, account: AccountConfig) => boolean },
+): void {
+  const metaPath = resolve(root, CONFIG_SUBDIR, 'provider-profiles.json');
+  if (!existsSync(metaPath)) return;
+  const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+  const parsedAccounts = parseLegacyProviderProfiles(meta);
+  const accounts: Record<string, AccountConfig> = {};
+  for (const [id, account] of Object.entries(parsedAccounts)) {
     if (opts?.shouldImportAccount && !opts.shouldImportAccount(id, account)) continue;
     accounts[id] = account;
   }
+  if (Object.keys(accounts).length === 0) return;
   const { merged } = mergeIntoGlobal(accounts, projectRoot, { skipConflicts: true });
   const mergedSet = new Set(merged);
   // Read global state after merge for retry-safe credential import
@@ -333,18 +369,9 @@ function migrateLegacyFrom(
   const secretsPath = resolve(root, CONFIG_SUBDIR, 'provider-profiles.secrets.local.json');
   if (!existsSync(secretsPath)) return;
   const secretsMeta = JSON.parse(readFileSync(secretsPath, 'utf-8'));
-  // v2/v3: flat { profiles: { <id>: { apiKey } } }.
-  // v1: nested { providers: { <client>: { <id>: { apiKey } } } }.
-  let profileSecrets: Record<string, Record<string, unknown>> = {};
-  if (secretsMeta?.profiles && typeof secretsMeta.profiles === 'object') {
-    profileSecrets = secretsMeta.profiles;
-  } else if (secretsMeta?.providers && typeof secretsMeta.providers === 'object') {
-    for (const clientSecrets of Object.values(secretsMeta.providers as Record<string, unknown>)) {
-      if (typeof clientSecrets === 'object' && clientSecrets !== null) {
-        Object.assign(profileSecrets, clientSecrets as Record<string, Record<string, unknown>>);
-      }
-    }
-  }
+  const profileSecrets: Record<string, { apiKey: string }> = Object.fromEntries(
+    Object.entries(parseLegacyProviderSecrets(secretsMeta)).map(([id, apiKey]) => [id, { apiKey }]),
+  );
   const globalRoot = resolveGlobalRoot(projectRoot);
   const credPath = resolve(globalRoot, CONFIG_SUBDIR, 'credentials.json');
   const existing = existsSync(credPath)

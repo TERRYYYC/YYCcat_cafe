@@ -91,8 +91,11 @@ function createProjectRoot(prefix) {
   return projectRoot;
 }
 
-function writeAccountsStore(workspaceRoot, accounts) {
-  writeFileSync(join(workspaceRoot, '.cat-cafe', 'accounts.json'), JSON.stringify(accounts, null, 2), 'utf-8');
+function writeAccountsStore(storeRoot, accounts, credentials) {
+  writeFileSync(join(storeRoot, '.cat-cafe', 'accounts.json'), JSON.stringify(accounts, null, 2), 'utf-8');
+  if (credentials) {
+    writeFileSync(join(storeRoot, '.cat-cafe', 'credentials.json'), JSON.stringify(credentials, null, 2), 'utf-8');
+  }
 }
 
 function baseCreatePayload(overrides) {
@@ -195,14 +198,18 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
     // The account exists ONLY in the workspace accounts store — exactly what
     // routes/accounts.ts produces when the Hub saves a login while the API
     // serves from the runtime checkout.
-    writeAccountsStore(workspaceRoot, {
-      'team-anthropic': {
-        authType: 'api_key',
-        clientId: 'anthropic',
-        displayName: 'Team Anthropic',
-        models: ['claude-sonnet-4-6'],
+    writeAccountsStore(
+      workspaceRoot,
+      {
+        'team-anthropic': {
+          authType: 'api_key',
+          clientId: 'anthropic',
+          displayName: 'Team Anthropic',
+          models: ['claude-sonnet-4-6'],
+        },
       },
-    });
+      { 'team-anthropic': { apiKey: 'sk-team-anthropic' } },
+    );
 
     const app = await buildApp();
     const res = await injectCat(
@@ -238,20 +245,24 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
     process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
     process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
 
-    writeAccountsStore(workspaceRoot, {
-      'team-anthropic': {
-        authType: 'api_key',
-        clientId: 'anthropic',
-        displayName: 'Team Anthropic',
-        models: ['claude-sonnet-4-6'],
+    writeAccountsStore(
+      workspaceRoot,
+      {
+        'team-anthropic': {
+          authType: 'api_key',
+          clientId: 'anthropic',
+          displayName: 'Team Anthropic',
+          models: ['claude-sonnet-4-6'],
+        },
+        'team-anthropic-2': {
+          authType: 'api_key',
+          clientId: 'anthropic',
+          displayName: 'Team Anthropic 2',
+          models: ['claude-sonnet-4-6'],
+        },
       },
-      'team-anthropic-2': {
-        authType: 'api_key',
-        clientId: 'anthropic',
-        displayName: 'Team Anthropic 2',
-        models: ['claude-sonnet-4-6'],
-      },
-    });
+      { 'team-anthropic': { apiKey: 'sk-t1' }, 'team-anthropic-2': { apiKey: 'sk-t2' } },
+    );
 
     const app = await buildApp();
     const createRes = await injectCat(
@@ -337,6 +348,110 @@ describe('cats routes account-root parity', { concurrency: false }, () => {
       patchRes.statusCode,
       200,
       `unrelated PATCH must not require account topology, got ${patchRes.statusCode}: ${patchRes.body}`,
+    );
+    await app.close();
+  });
+
+  it('POST /api/cats rejects an api_key binding whose account has no stored credential (dispatch parity)', async () => {
+    const runtimeRoot = createProjectRoot('cats-acct-nokey-rt-');
+    const workspaceRoot = createProjectRoot('cats-acct-nokey-ws-');
+    process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+    process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+    process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+
+    // Account entry exists but its credential was never stored — dispatch
+    // would fail fast on this, so binding must reject instead of persisting
+    // a member that can never run.
+    writeAccountsStore(workspaceRoot, {
+      'team-anthropic': { authType: 'api_key', clientId: 'anthropic', models: ['claude-sonnet-4-6'] },
+    });
+
+    const app = await buildApp();
+    const res = await injectCat(app, 'POST', '/api/cats', baseCreatePayload({ accountRef: 'team-anthropic' }));
+    assert.equal(res.statusCode, 400, `expected credential-less api_key binding to be rejected: ${res.body}`);
+    assert.match(JSON.parse(res.body).error, /has no API key set/i);
+    await app.close();
+  });
+
+  it('POST /api/cats rejects a foreign legacy-subscription account (OAuth guard runs after normalization)', async () => {
+    const runtimeRoot = createProjectRoot('cats-acct-sub-rt-');
+    const workspaceRoot = createProjectRoot('cats-acct-sub-ws-');
+    process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+    process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+    process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+
+    // Legacy 'subscription' spelling with a FOREIGN clientId: after boundary
+    // normalization this is an oauth account of another family, so the OAuth
+    // family guard must reject the binding (previously the out-of-union value
+    // skipped the guard entirely).
+    writeAccountsStore(workspaceRoot, {
+      'legacy-openai': { authType: 'subscription', clientId: 'openai' },
+    });
+
+    const app = await buildApp();
+    const res = await injectCat(app, 'POST', '/api/cats', baseCreatePayload({ accountRef: 'legacy-openai' }));
+    assert.equal(res.statusCode, 400, `expected foreign legacy-subscription binding to be rejected: ${res.body}`);
+    assert.match(JSON.parse(res.body).error, /incompatible/i);
+    await app.close();
+  });
+
+  it('credential-only builtin ref: route verdict and dispatch resolver agree (synthetic parity)', async () => {
+    const runtimeRoot = createProjectRoot('cats-acct-credonly-rt-');
+    const workspaceRoot = createProjectRoot('cats-acct-credonly-ws-');
+    process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+    process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+    process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+
+    // Both stores hold the SAME credential for the well-known oauth id but no
+    // account entry — route validation and dispatch must both resolve the
+    // synthetic builtin (oauth) instead of one null / one synthetic.
+    writeAccountsStore(workspaceRoot, {}, { claude: { apiKey: 'sk-equal' } });
+    writeAccountsStore(runtimeRoot, {}, { claude: { apiKey: 'sk-equal' } });
+
+    const app = await buildApp();
+    const res = await injectCat(
+      app,
+      'POST',
+      '/api/cats',
+      baseCreatePayload({ catId: 'probe-credonly', mentionPatterns: ['@probe-credonly'], accountRef: 'claude' }),
+    );
+    assert.equal(res.statusCode, 201, `synthetic oauth binding must validate, got ${res.statusCode}: ${res.body}`);
+
+    const dispatched = await resolveLikeDispatch(runtimeRoot, 'anthropic', 'claude');
+    assert.ok(dispatched, 'dispatch must resolve the same synthetic builtin');
+    assert.equal(dispatched.authType, 'oauth');
+    await app.close();
+  });
+
+  it('PATCH serviceTier works for a Codex account stored with legacy subscription authType', async () => {
+    const runtimeRoot = createProjectRoot('cats-acct-codexsub-rt-');
+    const workspaceRoot = createProjectRoot('cats-acct-codexsub-ws-');
+    process.env.CAT_TEMPLATE_PATH = join(runtimeRoot, 'cat-template.json');
+    process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+    process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+
+    writeAccountsStore(workspaceRoot, {
+      'codex-legacy': { authType: 'subscription', clientId: 'openai' },
+    });
+
+    const app = await buildApp();
+    const createRes = await injectCat(app, 'POST', '/api/cats', {
+      ...baseCreatePayload({ catId: 'probe-codex-sub', mentionPatterns: ['@probe-codex-sub'] }),
+      clientId: 'openai',
+      accountRef: 'codex-legacy',
+      defaultModel: 'gpt-5.4',
+    });
+    assert.equal(createRes.statusCode, 201, `codex legacy-subscription create failed: ${createRes.body}`);
+
+    // Normalized to oauth, the Codex speed resolver must treat this as a
+    // configurable OAuth binding (previously 'subscription' skipped it).
+    const patchRes = await injectCat(app, 'PATCH', '/api/cats/probe-codex-sub', {
+      cli: { serviceTier: 'standard' },
+    });
+    assert.equal(
+      patchRes.statusCode,
+      200,
+      `legacy-subscription Codex binding must accept serviceTier, got ${patchRes.statusCode}: ${patchRes.body}`,
     );
     await app.close();
   });

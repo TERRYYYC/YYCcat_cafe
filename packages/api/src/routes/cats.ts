@@ -486,6 +486,14 @@ async function validateAccountBindingOrThrow(
   if (runtimeProfile.authType === 'api_key' && !defaultModel?.trim()) {
     throw new Error('API Key 认证类型需要指定 Model');
   }
+  // Route/dispatch parity: dispatch fails fast on an api_key account without a
+  // stored credential, so accepting the binding here would persist a member
+  // that can never run. Reject at binding time with the same guidance.
+  if (runtimeProfile.authType === 'api_key' && !runtimeProfile.apiKey) {
+    throw new Error(
+      `account "${trimmedAccountRef}" is configured as api_key but has no API key set — add the key in Hub > account settings`,
+    );
+  }
   const compatibilityError = validateRuntimeProviderBinding(client, runtimeProfile, defaultModel);
   if (compatibilityError) {
     throw new Error(compatibilityError);

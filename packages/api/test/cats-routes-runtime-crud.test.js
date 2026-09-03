@@ -1194,6 +1194,8 @@ describe('cats routes runtime CRUD', { concurrency: false }, () => {
       models: ['gpt-5.6-sol'],
       displayName: 'Codex API Key',
     });
+    const { writeCredential } = await import('../dist/config/credentials.js');
+    writeCredential('codex-api-key', { apiKey: 'sk-codex-api-key' }, projectRoot);
 
     const Fastify = (await import('fastify')).default;
     const { catsRoutes } = await import('../dist/routes/cats.js');

@@ -250,6 +250,80 @@ describe('account-store compatibility verdict', { concurrency: false }, () => {
     assert.equal(sel.kind, 'conflict', 'identity-bearing clientId divergence must fail closed');
   });
 
+  it('legacy subscription vs migrated oauth compare EQUAL after boundary normalization', async () => {
+    const cred = { acme: { apiKey: 'sk-same' } };
+    writeStore(workspaceRoot, { acme: { authType: 'oauth', clientId: 'openai' } }, cred);
+    writeStore(runtimeRoot, { acme: { authType: 'subscription', clientId: 'openai' } }, cred);
+    const sel = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(sel.kind, 'ok', 'subscription is the pre-#340 spelling of oauth — not a conflict');
+    assert.equal(sel.origin, 'both-equal');
+  });
+
+  it('provider-profiles.json + secrets: oldest legacy store resolves without materializing anything', async () => {
+    // Reviewer repro: workspace holds ONLY the pre-accounts legacy files; the
+    // pure snapshot must see them (same parser as the migration) and the probe
+    // must not write anything.
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'provider-profiles.json'),
+      JSON.stringify({ profiles: [{ id: 'old-gateway', authType: 'api_key', baseUrl: 'https://old.gw' }] }, null, 2),
+      'utf-8',
+    );
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'provider-profiles.secrets.local.json'),
+      JSON.stringify({ profiles: { 'old-gateway': { apiKey: 'sk-old-gateway' } } }, null, 2),
+      'utf-8',
+    );
+    const before = readdirSync(join(workspaceRoot, '.cat-cafe')).sort();
+
+    const resolution = await resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', 'old-gateway');
+    assert.equal(resolution.kind, 'ok', 'pre-accounts legacy stores must be dispatchable without migration');
+    assert.equal(resolution.profile.apiKey, 'sk-old-gateway');
+    assert.equal(resolution.profile.baseUrl, 'https://old.gw');
+
+    const afterFiles = readdirSync(join(workspaceRoot, '.cat-cafe')).sort();
+    assert.deepEqual(afterFiles, before, 'resolving from legacy stores must not materialize accounts.json');
+  });
+
+  it('blank persisted clientId is INVALID, never a legacy alias fall-through', async () => {
+    writeStore(workspaceRoot, { claude: { authType: 'api_key', clientId: '  ' } }, { claude: { apiKey: 'sk-x' } });
+    writeStore(runtimeRoot, {});
+    const sel = selectAccountStoreForRef(await topology(), 'claude');
+    assert.equal(sel.kind, 'invalid', 'an explicit-but-blank identity claim must fail closed');
+  });
+
+  it('non-number expiresAt and non-string tokens in credentials are INVALID', async () => {
+    writeStore(
+      workspaceRoot,
+      { acme: { authType: 'api_key', clientId: 'anthropic' } },
+      { acme: { apiKey: 'sk-x', expiresAt: 'tomorrow' } },
+    );
+    writeStore(runtimeRoot, {});
+    const sel = selectAccountStoreForRef(await topology(), 'acme');
+    assert.equal(sel.kind, 'invalid', 'a malformed credential field must fail closed');
+  });
+
+  it('whitespace GLOBAL env: REAL store writers and the verdict share one root', async () => {
+    const globalRoot = makeRoot('acct-compat-global-writer-');
+    process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT = `  ${globalRoot}  `;
+    delete process.env.CAT_CAFE_WORKSPACE_ROOT;
+
+    // Use the REAL migration-aware writer with the whitespace env in place —
+    // previously it resolved the raw value and wrote to a different directory
+    // than the trimmed verdict root.
+    const { writeCatalogAccount } = await import('../dist/config/catalog-accounts.js');
+    const { writeCredential } = await import('../dist/config/credentials.js');
+    writeCatalogAccount(runtimeRoot, 'ws-acct', { authType: 'api_key', clientId: 'anthropic' });
+    writeCredential('ws-acct', { apiKey: 'sk-ws-acct' }, runtimeRoot);
+
+    assert.ok(
+      existsSync(join(globalRoot, '.cat-cafe', 'accounts.json')),
+      'the real writer must land in the trimmed global root',
+    );
+    const resolution = await resolveRuntimeAccountProfile(runtimeRoot, 'anthropic', 'ws-acct');
+    assert.equal(resolution.kind, 'ok', 'verdict and writer must agree on the same root');
+    assert.equal(resolution.profile.apiKey, 'sk-ws-acct');
+  });
+
   it('GLOBAL_CONFIG_ROOT with surrounding whitespace resolves to one consistent store', async () => {
     const globalRoot = makeRoot('acct-compat-global-ws-');
     writeStore(

@@ -12,11 +12,12 @@
  */
 
 import { catRegistry } from '@cat-cafe/shared';
-import { type BuiltinAccountClient, profileFamilyIdentity } from '../../../../config/account-resolver.js';
+import type { BuiltinAccountClient } from '../../../../config/account-resolver.js';
 import { resolveRuntimeAccountProfile } from '../../../../config/account-root.js';
 import { resolveBoundAccountRefForCat } from '../../../../config/cat-account-binding.js';
 import { getCatModel } from '../../../../config/cat-models.js';
 import { buildLlmEndpoint } from '../../../../config/llm-provider-endpoints.js';
+import { resolveActiveProjectRoot } from '../../../../utils/active-project-root.js';
 import type { AIActionResponse, AIProvider } from '../game/werewolf/WerewolfAIPlayer.js';
 
 const LLM_TIMEOUT_MS = 10_000;
@@ -84,9 +85,14 @@ export class LlmAIProvider implements AIProvider {
    *   network on foreign/missing credentials).
    */
   private async resolveCredential(client: BuiltinAccountClient): Promise<{ apiKey: string; baseUrl?: string }> {
+    // Same coordinate as primary dispatch (invoke-single-cat): the real
+    // launcher starts the API from packages/api, so raw process.cwd() points
+    // inside the checkout and misses the account stores. Resolve the active
+    // project root ONCE and share it between binding and profile resolution.
+    const projectRoot = resolveActiveProjectRoot(process.cwd());
     const entry = catRegistry.tryGet(this.catId);
-    const boundRef = entry ? resolveBoundAccountRefForCat(process.cwd(), this.catId, entry.config) : undefined;
-    const resolution = await resolveRuntimeAccountProfile(process.cwd(), client, boundRef);
+    const boundRef = entry ? resolveBoundAccountRefForCat(projectRoot, this.catId, entry.config) : undefined;
+    const resolution = await resolveRuntimeAccountProfile(projectRoot, client, boundRef);
     const apiKey = resolution.kind === 'ok' ? resolution.profile.apiKey : undefined;
     if (resolution.kind !== 'ok' || !apiKey) {
       throw new Error(
@@ -95,13 +101,13 @@ export class LlmAIProvider implements AIProvider {
     }
     const profile = resolution.profile;
     const baseUrl = profile.baseUrl?.trim() || undefined;
-    if (profile.authType === 'api_key') {
-      // The official default endpoint is reserved for keys provably belonging
-      // to this family. An explicitly bound cross-protocol/unknown api_key
-      // account must carry its own baseUrl — otherwise we would send a foreign
-      // key to the official domain (credential disclosure). Fail before fetch.
-      const identity = profileFamilyIdentity(profile);
-      if (identity !== client && !baseUrl) {
+    if (!baseUrl) {
+      // The official default endpoint is reserved for keys with a provably
+      // persisted family identity — independent of authType (an oauth or
+      // legacy-subscription entry carrying a key can leak it just as well as
+      // an api_key one, and a display-name slug is never identity). Anything
+      // else must carry its own baseUrl or fail BEFORE any fetch.
+      if (profile.persistedClientId?.trim() !== client) {
         throw new Error(
           `account "${profile.id}" is not provably a ${client} credential (clientId: ${profile.persistedClientId ?? '(none)'}) ` +
             'and has no custom baseUrl — refusing to send its key to the official endpoint',
@@ -167,7 +173,9 @@ export class LlmAIProvider implements AIProvider {
   private async callGoogle(prompt: string, signal: AbortSignal): Promise<LlmCallResult> {
     const { apiKey, baseUrl } = await this.resolveCredential('google');
 
-    const resp = await fetch(`${buildLlmEndpoint('google', baseUrl, this.model)}?key=${apiKey}`, {
+    const googleEndpoint = new URL(buildLlmEndpoint('google', baseUrl, this.model));
+    googleEndpoint.searchParams.set('key', apiKey);
+    const resp = await fetch(googleEndpoint.toString(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

@@ -8,13 +8,14 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { CredentialEntry } from '@cat-cafe/shared';
+import { globalConfigRootEnv } from './global-config-root.js';
 import { assertSafeTestConfigRoot } from './test-config-write-guard.js';
 
 const CONFIG_SUBDIR = '.cat-cafe';
 const CREDENTIALS_FILENAME = 'credentials.json';
 
 function resolveGlobalRoot(projectRoot?: string): string {
-  const envRoot = process.env.CAT_CAFE_GLOBAL_CONFIG_ROOT;
+  const envRoot = globalConfigRootEnv();
   if (envRoot) return resolve(envRoot);
   if (projectRoot) return resolve(projectRoot);
   return homedir();

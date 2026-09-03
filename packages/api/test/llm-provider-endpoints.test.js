@@ -59,4 +59,10 @@ describe('buildLlmEndpoint', () => {
   it('unparsable base fails before any network call could be made', () => {
     assert.throws(() => buildLlmEndpoint('anthropic', 'not a url'), /invalid anthropic base URL/);
   });
+
+  it('non-http(s) schemes are rejected before any network call', () => {
+    assert.throws(() => buildLlmEndpoint('anthropic', 'file:///etc/passwd'), /only http\(s\) endpoints/);
+    assert.throws(() => buildLlmEndpoint('openai', 'ftp://gw.example.com'), /only http\(s\) endpoints/);
+    assert.throws(() => buildLlmEndpoint('google', 'data:text/plain,x'), /only http\(s\) endpoints/);
+  });
 });

@@ -24,6 +24,8 @@ const { resetMigrationState } = await import('../dist/config/catalog-accounts.js
 const tempDirs = [];
 const ENV_KEYS_TO_ISOLATE = [
   'CAT_CAFE_GLOBAL_CONFIG_ROOT',
+  'CAT_CAFE_CONFIG_ROOT',
+  'CAT_TEMPLATE_PATH',
   'CAT_CAFE_RUNTIME_ROOT',
   'CAT_CAFE_WORKSPACE_ROOT',
   'CAT_CAFE_SKIP_HOMEDIR_MIGRATION',
@@ -31,6 +33,10 @@ const ENV_KEYS_TO_ISOLATE = [
   'PROJECT_ALLOWED_ROOTS_APPEND',
   'PROJECT_DENIED_ROOTS',
 ];
+
+// setup-cat-registry installed this isolated path; restore it per-test so
+// deleting CAT_TEMPLATE_PATH inside a case never leaks to other files.
+const ISOLATED_TEMPLATE_PATH = process.env.CAT_TEMPLATE_PATH;
 
 function makeGlobalStore(accounts, credentials) {
   const root = mkdtempSync(join(tmpdir(), 'llm-provider-cred-'));
@@ -69,6 +75,7 @@ describe('LlmAIProvider credential safety', { concurrency: false }, () => {
       delete process.env[key];
     }
     process.env.CAT_CAFE_SKIP_HOMEDIR_MIGRATION = '1';
+    if (ISOLATED_TEMPLATE_PATH) process.env.CAT_TEMPLATE_PATH = ISOLATED_TEMPLATE_PATH;
     resetMigrationState();
     registrySnapshot = catRegistry.getAllConfigs();
     fetchMock = mock.method(globalThis, 'fetch', async () => ({
@@ -184,6 +191,111 @@ describe('LlmAIProvider credential safety', { concurrency: false }, () => {
     await provider.generateSpeech('say hi');
     const [url] = fetchMock.mock.calls[0].arguments;
     assert.equal(url, 'https://gw.example.com/v1/messages', 'versioned gateway base must not double the version');
+  });
+
+  it('foreign OAUTH account carrying a key: fails closed with ZERO network calls', async () => {
+    // Reviewer repro: the family gate must be independent of authType — an
+    // oauth entry with a stored key can leak it just like an api_key one.
+    makeGlobalStore(
+      { 'my-openai-oauth': { authType: 'oauth', clientId: 'openai' } },
+      { 'my-openai-oauth': { apiKey: 'sk-oauth-foreign' } },
+    );
+    registerGameCat('game-oauth-foreign', 'my-openai-oauth');
+
+    const provider = new LlmAIProvider('game-oauth-foreign');
+    await assert.rejects(() => provider.generateSpeech('say hi'), /refusing to send its key to the official endpoint/);
+    assert.equal(fetchMock.mock.callCount(), 0, 'a foreign oauth key must cause zero network traffic');
+  });
+
+  it('foreign legacy-SUBSCRIPTION account carrying a key: fails closed with ZERO network calls', async () => {
+    makeGlobalStore(
+      { 'my-openai-sub': { authType: 'subscription', clientId: 'openai' } },
+      { 'my-openai-sub': { apiKey: 'sk-subscription-foreign' } },
+    );
+    registerGameCat('game-sub-foreign', 'my-openai-sub');
+
+    const provider = new LlmAIProvider('game-sub-foreign');
+    await assert.rejects(() => provider.generateSpeech('say hi'), /refusing to send its key to the official endpoint/);
+    assert.equal(fetchMock.mock.callCount(), 0, 'a foreign legacy-subscription key must cause zero network traffic');
+  });
+
+  it('freshly-created "claude" api_key WITHOUT clientId: display-name slug is not identity, ZERO network calls', async () => {
+    // Reviewer repro: an unknown api_key account whose deriveAccountId slug
+    // collides with the well-known builtin id must not inherit its identity.
+    makeGlobalStore({ claude: { authType: 'api_key' } }, { claude: { apiKey: 'sk-slug-impostor' } });
+    registerGameCat('game-slug-impostor', 'claude');
+
+    const provider = new LlmAIProvider('game-slug-impostor');
+    await assert.rejects(() => provider.generateSpeech('say hi'), /refusing to send its key to the official endpoint/);
+    assert.equal(fetchMock.mock.callCount(), 0, 'a slug-impostor key must cause zero network traffic');
+  });
+
+  it('launcher coordinate: resolves the workspace store even when cwd is runtime/packages/api', async () => {
+    // Production mirror: start-dev.sh runs the API from packages/api, GLOBAL
+    // unset, accounts only in the workspace root. Raw process.cwd() misses
+    // them; the provider must resolve the ACTIVE project root like dispatch.
+    const runtimeRoot = mkdtempSync(join(tmpdir(), 'llm-launcher-rt-'));
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'llm-launcher-ws-'));
+    tempDirs.push(runtimeRoot, workspaceRoot);
+    mkdirSync(join(runtimeRoot, 'packages', 'api'), { recursive: true });
+    writeFileSync(join(runtimeRoot, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n', 'utf-8');
+    mkdirSync(join(workspaceRoot, '.cat-cafe'), { recursive: true });
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'accounts.json'),
+      JSON.stringify({ 'ws-anthropic': { authType: 'api_key', clientId: 'anthropic' } }, null, 2),
+      'utf-8',
+    );
+    writeFileSync(
+      join(workspaceRoot, '.cat-cafe', 'credentials.json'),
+      JSON.stringify({ 'ws-anthropic': { apiKey: 'sk-workspace-launcher' } }, null, 2),
+      'utf-8',
+    );
+    delete process.env.CAT_TEMPLATE_PATH;
+    delete process.env.CAT_CAFE_CONFIG_ROOT;
+    process.env.CAT_CAFE_RUNTIME_ROOT = runtimeRoot;
+    process.env.CAT_CAFE_WORKSPACE_ROOT = workspaceRoot;
+    registerGameCat('game-launcher', 'ws-anthropic');
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(join(runtimeRoot, 'packages', 'api'));
+      const provider = new LlmAIProvider('game-launcher');
+      await provider.generateSpeech('say hi');
+    } finally {
+      process.chdir(previousCwd);
+    }
+    assert.equal(fetchMock.mock.callCount(), 1, 'workspace-stored key must resolve from the launcher cwd');
+    const [, init] = fetchMock.mock.calls[0].arguments;
+    assert.equal(init.headers['x-api-key'], 'sk-workspace-launcher');
+  });
+
+  it('google call injects the key via searchParams (base with existing query stays intact)', async () => {
+    makeGlobalStore(
+      { 'my-google': { authType: 'api_key', clientId: 'google', baseUrl: 'https://gw.example.com?alt=json' } },
+      { 'my-google': { apiKey: 'sk-google-key' } },
+    );
+    const base =
+      catRegistry.tryGet('opus')?.config ?? catRegistry.getAllConfigs()[Object.keys(catRegistry.getAllConfigs())[0]];
+    catRegistry.register('game-google', {
+      ...base,
+      id: 'game-google',
+      mentionPatterns: ['@game-google'],
+      clientId: 'google',
+      defaultModel: 'gemini-3.5-flash',
+      accountRef: 'my-google',
+    });
+    fetchMock.mock.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }),
+      text: async () => '',
+    }));
+
+    const provider = new LlmAIProvider('game-google');
+    await provider.generateSpeech('say hi');
+    const [url] = fetchMock.mock.calls[0].arguments;
+    const parsed = new URL(url);
+    assert.equal(parsed.searchParams.get('key'), 'sk-google-key', 'key must be set via searchParams');
+    assert.equal(parsed.searchParams.get('alt'), 'json', 'pre-existing query params must survive');
   });
 
   it('no resolvable credential: throws before any fetch', async () => {

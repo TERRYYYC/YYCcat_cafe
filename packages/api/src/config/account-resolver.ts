@@ -155,9 +155,11 @@ function resolveAnthropicDefaultBinding(projectRoot: string): RuntimeProviderPro
  * explicit non-builtin clientId grants no builtin identity at all.
  */
 export function deriveAccountClient(ref: string, account: AccountConfig): BuiltinAccountClient | null {
-  const persisted = account.clientId;
-  if (persisted) {
-    return isBuiltinAccountClient(persisted) ? persisted : null;
+  if (account.clientId !== undefined) {
+    // The field being PRESENT is an explicit identity claim — a blank value is
+    // an empty claim (null identity), never a fall-through to the legacy alias.
+    const persisted = account.clientId.trim();
+    return persisted && isBuiltinAccountClient(persisted) ? persisted : null;
   }
   return BUILTIN_ACCOUNT_CLIENT_FOR_ID[ref] ?? null;
 }
@@ -325,7 +327,7 @@ export function buildRuntimeProfile(
     authType: account.authType,
     kind: isBuiltin ? 'builtin' : 'api_key',
     ...(isBuiltin && builtinClient ? { client: builtinClient } : {}),
-    ...(account.clientId ? { persistedClientId: account.clientId } : {}),
+    ...(account.clientId !== undefined ? { persistedClientId: account.clientId } : {}),
     ...(builtinProtocol ? { protocol: builtinProtocol } : {}),
     ...(account.baseUrl ? { baseUrl: account.baseUrl } : {}),
     ...(apiKey ? { apiKey } : {}),
@@ -346,8 +348,10 @@ function accountToRuntimeProfile(ref: string, account: AccountConfig, projectRoo
 /** Family identity of a resolved profile: persisted clientId is authoritative
  *  (non-builtin → null = unknown), well-known id map is the legacy fallback. */
 export function profileFamilyIdentity(profile: RuntimeProviderProfile): BuiltinAccountClient | null {
-  const persisted = profile.persistedClientId;
-  if (persisted) return isBuiltinAccountClient(persisted) ? persisted : null;
+  if (profile.persistedClientId !== undefined) {
+    const persisted = profile.persistedClientId.trim();
+    return persisted && isBuiltinAccountClient(persisted) ? persisted : null;
+  }
   return BUILTIN_ACCOUNT_CLIENT_FOR_ID[profile.id] ?? null;
 }
 
