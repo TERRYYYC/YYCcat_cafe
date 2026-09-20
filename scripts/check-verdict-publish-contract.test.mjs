@@ -153,15 +153,15 @@ describe('check-verdict-publish-contract', () => {
     run(dir, { baseRef: 'HEAD', sourceRef: 'HEAD' });
   });
 
-  it('fails full mode when census is missing at base ref', () => {
+  it('passes full mode when base lacks census (bootstrap)', () => {
     const dir = tracked(
       makeRepo({
         fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
-        // no seedCensus
+        // no seedCensus — bootstrap case
       }),
     );
-    const stderr = runExpectFail(dir, { baseRef: 'HEAD', sourceRef: 'HEAD' });
-    assert.match(stderr, /CENSUS_MISSING/);
+    // base lacks census → bootstrap allowed (P1 #4 fix)
+    run(dir, { baseRef: 'HEAD', sourceRef: 'HEAD' });
   });
 
   it('requires --base-ref or --fresh-base-branch in full mode', () => {
@@ -257,5 +257,73 @@ describe('check-verdict-publish-contract', () => {
     assert.ok(!stderr.includes('sentinel-secret'), `secret leaked in stderr: ${stderr}`);
     // Redacted placeholder should appear
     assert.match(stderr, /\*\*\*:\*\*\*/);
+  });
+
+  it('redacts SSH-scheme credential-bearing URLs', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `ssh://oauth2:sentinel-ssh-secret@github.com/${EXPECTED_REPO}.git`,
+      }),
+    );
+    const stderr = runExpectFail(dir, { identityOnly: true });
+    assert.match(stderr, /IDENTITY_FAILED/);
+    assert.ok(!stderr.includes('sentinel-ssh-secret'), `SSH secret leaked in stderr: ${stderr}`);
+    assert.match(stderr, /\*\*\*:\*\*\*/);
+  });
+
+  it('redacts uppercase-scheme credential-bearing URLs', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `HTTPS://oauth2:sentinel-upper-secret@github.com/${EXPECTED_REPO}.git`,
+      }),
+    );
+    const stderr = runExpectFail(dir, { identityOnly: true });
+    assert.match(stderr, /IDENTITY_FAILED/);
+    assert.ok(!stderr.includes('sentinel-upper-secret'), `uppercase scheme secret leaked: ${stderr}`);
+    assert.match(stderr, /\*\*\*:\*\*\*/);
+  });
+
+  // --- Bootstrap path (P1 finding #4) ---
+
+  it('allows bootstrap: base lacks census, source has census', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
+        // no seedCensus — base has no census
+      }),
+    );
+    // Create a branch that adds census (bootstrap: first publication)
+    execSync('git checkout -b with-census', { cwd: dir, stdio: 'pipe' });
+    const censusDir = resolve(dir, 'docs/harness-feedback/registry');
+    mkdirSync(censusDir, { recursive: true });
+    writeFileSync(resolve(censusDir, 'measurement-bundles.yaml'), 'entries: []\n');
+    execSync('git add -A && git commit -m "add census"', { cwd: dir, stdio: 'pipe' });
+    // base = main (no census), source = HEAD (has census) → should pass
+    run(dir, { baseRef: 'main', sourceRef: 'HEAD' });
+  });
+
+  it('allows bootstrap: both base and source lack census', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
+        // no seedCensus
+      }),
+    );
+    // Neither base nor source has census; this is a fresh bootstrap
+    run(dir, { baseRef: 'HEAD', sourceRef: 'HEAD' });
+  });
+
+  // --- source-ref required (P2 follow-up) ---
+
+  it('fails full mode when --source-ref is omitted', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
+        seedCensus: true,
+      }),
+    );
+    // base-ref provided but no source-ref
+    const stderr = runExpectFail(dir, { baseRef: 'HEAD' });
+    assert.match(stderr, /SOURCE_REF_REQUIRED/);
   });
 });

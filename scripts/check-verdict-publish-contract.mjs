@@ -69,15 +69,18 @@ function extractOwnerRepo(url) {
 }
 
 /**
- * Redact userinfo (credentials) from a URL for safe diagnostics.
- * HTTPS with embedded credentials (e.g. https://oauth2:token@github.com/...)
- * must never leak the token into API responses or logs.
+ * Redact credentials from a URL for safe diagnostics.
+ * Handles all scheme://user:pass@host patterns (HTTPS, SSH, git+ssh, etc.),
+ * not just lowercase HTTP(S). Also strips query-string tokens.
  */
 function redactUrl(url) {
   // Strip control characters (C0 + DEL) by filtering codepoints
   const clean = [...url].filter((ch) => ch.charCodeAt(0) > 0x1f && ch.charCodeAt(0) !== 0x7f).join('');
-  // Redact HTTPS userinfo: https://user:pass@host → https://***:***@host
-  return clean.replace(/^(https?:\/\/)[^@/]+@/, '$1***:***@');
+  // Redact userinfo in ANY scheme://...@host (case-insensitive scheme)
+  let redacted = clean.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^@/]+@/, '$1***:***@');
+  // Redact query-string credential parameters
+  redacted = redacted.replace(/([?&])(token|access_token|password|secret|key)=[^&]*/gi, '$1$2=***');
+  return redacted;
 }
 
 /**
@@ -157,23 +160,23 @@ if (!baseRef) {
 }
 
 const sourceRef = args['source-ref'];
+if (!sourceRef) {
+  fail('SOURCE_REF_REQUIRED', '--source-ref is required in full (non-identity-only) mode');
+}
 
-// Verify census file exists at the resolved base ref
+// Census continuity contract:
+//   If base has census → source must also have it (generator must not delete it).
+//   If base lacks census → bootstrap (first publication); no continuity check.
 const censusRelPath = 'docs/harness-feedback/registry/measurement-bundles.yaml';
+let baseHasCensus = true;
 try {
   git(['cat-file', '-e', `${baseRef}:${censusRelPath}`]);
 } catch {
-  fail(
-    'CENSUS_MISSING',
-    `measurement census '${censusRelPath}' not found at '${baseRef}'. ` +
-      'The publisher cannot refresh the census without a baseline.',
-  );
+  baseHasCensus = false;
 }
 
-// When sourceRef is provided and differs from baseRef, verify the candidate
-// also contains the census. A generator that deletes/omits the census must
-// not pass the transport guard.
-if (sourceRef && sourceRef !== baseRef) {
+if (baseHasCensus && sourceRef !== baseRef) {
+  // Continuity: source candidate must preserve the existing census
   try {
     git(['cat-file', '-e', `${sourceRef}:${censusRelPath}`]);
   } catch {
