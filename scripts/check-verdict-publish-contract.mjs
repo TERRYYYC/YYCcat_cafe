@@ -69,6 +69,18 @@ function extractOwnerRepo(url) {
 }
 
 /**
+ * Redact userinfo (credentials) from a URL for safe diagnostics.
+ * HTTPS with embedded credentials (e.g. https://oauth2:token@github.com/...)
+ * must never leak the token into API responses or logs.
+ */
+function redactUrl(url) {
+  // Strip control characters (C0 + DEL) by filtering codepoints
+  const clean = [...url].filter((ch) => ch.charCodeAt(0) > 0x1f && ch.charCodeAt(0) !== 0x7f).join('');
+  // Redact HTTPS userinfo: https://user:pass@host → https://***:***@host
+  return clean.replace(/^(https?:\/\/)[^@/]+@/, '$1***:***@');
+}
+
+/**
  * Verify a single URL against the expected repo.
  * Returns null on success or {code, detail} on failure.
  */
@@ -77,7 +89,7 @@ function verifyUrl(url, label) {
   if (!ownerRepo) {
     return {
       code: 'IDENTITY_FAILED',
-      detail: `${label} URL '${url}' cannot be parsed as a GitHub remote`,
+      detail: `${label} URL '${redactUrl(url)}' cannot be parsed as a GitHub remote`,
     };
   }
   if (ownerRepo.toLowerCase() !== expectedRepo.toLowerCase()) {
@@ -144,6 +156,8 @@ if (!baseRef) {
   fail('SOURCE_REF_REQUIRED', '--base-ref or --fresh-base-branch is required in full (non-identity-only) mode');
 }
 
+const sourceRef = args['source-ref'];
+
 // Verify census file exists at the resolved base ref
 const censusRelPath = 'docs/harness-feedback/registry/measurement-bundles.yaml';
 try {
@@ -154,4 +168,19 @@ try {
     `measurement census '${censusRelPath}' not found at '${baseRef}'. ` +
       'The publisher cannot refresh the census without a baseline.',
   );
+}
+
+// When sourceRef is provided and differs from baseRef, verify the candidate
+// also contains the census. A generator that deletes/omits the census must
+// not pass the transport guard.
+if (sourceRef && sourceRef !== baseRef) {
+  try {
+    git(['cat-file', '-e', `${sourceRef}:${censusRelPath}`]);
+  } catch {
+    fail(
+      'CENSUS_MISSING_AT_SOURCE',
+      `measurement census '${censusRelPath}' not found at source ref '${sourceRef}'. ` +
+        'The candidate must preserve the census (generator may have deleted it).',
+    );
+  }
 }

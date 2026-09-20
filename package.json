@@ -131,7 +131,7 @@
     "check:brand-guard": "node --test scripts/intake-from-opensource.test.mjs scripts/lib/intake-gh-retry.test.mjs",
     "check:site-integrity": "node --test site/site-integrity.test.mjs",
     "check:site-css": "node scripts/build-site-css.mjs --check",
-    "check:verdict-publish-contract": "node --test scripts/check-verdict-publish-contract.test.mjs",
+    "check:verdict-publish-contract": "node --test scripts/check-verdict-publish-contract.test.mjs scripts/check-verdict-evidence-contract.test.mjs",
     "build:site-css": "node scripts/build-site-css.mjs",
     "check:design-md": "node --test scripts/check-design-md.test.mjs && node scripts/check-design-md.mjs"
   },
