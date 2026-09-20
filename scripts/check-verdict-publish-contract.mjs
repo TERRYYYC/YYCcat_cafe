@@ -185,26 +185,22 @@ function verifyRefResolves(ref, label) {
 verifyRefResolves(baseRef, '--base-ref');
 verifyRefResolves(sourceRef, '--source-ref');
 
-// Census continuity contract:
-//   If base has census → source must also have it (generator must not delete it).
-//   If base lacks census → bootstrap (first publication); no continuity check.
+// Census contract: ensureMeasurementBundleCensusFile creates census before the
+// generator runs; refreshMeasurementBundleCensusFile updates it; both are staged
+// and committed before this guard. Therefore post-commit source must contain it.
+// The only exception is the pre-stage identity+census call where base === source
+// (same OID) and census may not exist yet (first-ever publication).
 const censusRelPath = 'docs/harness-feedback/registry/measurement-bundles.yaml';
-let baseHasCensus = true;
-try {
-  git(['cat-file', '-e', `${baseRef}:${censusRelPath}`]);
-} catch {
-  baseHasCensus = false;
-}
-
-if (baseHasCensus && sourceRef !== baseRef) {
-  // Continuity: source candidate must preserve the existing census
+const baseOid = git(['rev-parse', baseRef]);
+const sourceOid = git(['rev-parse', sourceRef]);
+if (baseOid !== sourceOid) {
   try {
     git(['cat-file', '-e', `${sourceRef}:${censusRelPath}`]);
   } catch {
     fail(
       'CENSUS_MISSING_AT_SOURCE',
       `measurement census '${censusRelPath}' not found at source ref '${sourceRef}'. ` +
-        'The candidate must preserve the census (generator may have deleted it).',
+        'Post-commit source must contain census (created by ensureMeasurementBundleCensusFile).',
     );
   }
 }
