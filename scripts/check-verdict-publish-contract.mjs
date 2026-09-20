@@ -57,12 +57,16 @@ const baseRef =
  *   - not-github.com       (different TLD)
  */
 function extractOwnerRepo(url) {
+  // Strip query strings, fragments, and trailing whitespace before parsing.
+  // Prevents lazy regex capture from swallowing tokens like ?oauth_token=secret.
+  const cleanUrl = url.replace(/[?#].*$/, '').trim();
+
   // HTTPS: anchored at protocol boundary, requires /owner/repo path
-  const httpsMatch = url.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:\/)?$/);
+  const httpsMatch = cleanUrl.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:\/)?$/);
   if (httpsMatch) return httpsMatch[1];
 
   // SSH: anchored at user@host boundary
-  const sshMatch = url.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  const sshMatch = cleanUrl.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
   if (sshMatch) return sshMatch[1];
 
   return null;
@@ -163,6 +167,18 @@ const sourceRef = args['source-ref'];
 if (!sourceRef) {
   fail('SOURCE_REF_REQUIRED', '--source-ref is required in full (non-identity-only) mode');
 }
+
+// Verify both refs resolve to valid commits before checking census.
+// Distinguishes "ref is invalid" (hard error) from "file missing at ref" (bootstrap).
+function verifyRefResolves(ref, label) {
+  try {
+    git(['rev-parse', '--verify', `${ref}^{commit}`]);
+  } catch {
+    fail('INVALID_REF', `${label} '${ref}' does not resolve to a valid commit`);
+  }
+}
+verifyRefResolves(baseRef, '--base-ref');
+verifyRefResolves(sourceRef, '--source-ref');
 
 // Census continuity contract:
 //   If base has census → source must also have it (generator must not delete it).
