@@ -296,6 +296,21 @@ describe('check-verdict-publish-contract', () => {
     assert.ok(!stderr.includes('sentinel-query-secret'), `query token leaked in stderr: ${stderr}`);
   });
 
+  it('redacts SCP-style userinfo on parse-failure path', () => {
+    const dir = tracked(makeRepo({ fetchUrl: `sentinel-scp-user@github.com:${EXPECTED_REPO}.git` }));
+    const stderr = runExpectFail(dir, { identityOnly: true });
+    assert.match(stderr, /IDENTITY_FAILED/);
+    assert.ok(!stderr.includes('sentinel-scp-user'), `SCP userinfo leaked: ${stderr}`);
+    assert.match(stderr, /\*\*\*@/);
+  });
+
+  it('strips oauth_token from unparseable URL on failure path', () => {
+    const dir = tracked(makeRepo({ fetchUrl: `https://github.com.evil.com/repo.git?oauth_token=sentinel-oauth` }));
+    const stderr = runExpectFail(dir, { identityOnly: true });
+    assert.match(stderr, /IDENTITY_FAILED/);
+    assert.ok(!stderr.includes('sentinel-oauth'), `oauth_token leaked: ${stderr}`);
+  });
+
   // --- Bootstrap + ref resolution ---
 
   it('allows bootstrap: base lacks census, source creates it', () => {

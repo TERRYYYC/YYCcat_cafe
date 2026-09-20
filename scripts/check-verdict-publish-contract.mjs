@@ -82,8 +82,13 @@ function redactUrl(url) {
   const clean = [...url].filter((ch) => ch.charCodeAt(0) > 0x1f && ch.charCodeAt(0) !== 0x7f).join('');
   // Redact userinfo in ANY scheme://...@host (case-insensitive scheme)
   let redacted = clean.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^@/]+@/, '$1***:***@');
-  // Redact query-string credential parameters
-  redacted = redacted.replace(/([?&])(token|access_token|password|secret|key)=[^&]*/gi, '$1$2=***');
+  // Redact SCP-style userinfo (user@host:path / user:pass@host:path — no scheme://)
+  if (!redacted.includes('://') && redacted.includes('@')) {
+    redacted = redacted.replace(/^[^@]+@/, '***@');
+  }
+  // Strip all query strings and fragments — they may contain tokens/secrets
+  // (oauth_token, access_token, etc.) and are not needed for diagnostics
+  redacted = redacted.replace(/[?#].*$/, '');
   return redacted;
 }
 
