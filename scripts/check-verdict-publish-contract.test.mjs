@@ -11,6 +11,8 @@ const EXPECTED_REPO = 'zts212653/clowder-ai';
 function makeRepo({ fetchUrl, pushUrls, seedCensus = false } = {}) {
   const dir = mkdtempSync(`${tmpdir()}/verdict-contract-test-`);
   execSync('git init --initial-branch=main', { cwd: dir, stdio: 'pipe' });
+  // Configure fixture-local identity so tests pass in CI (no global git config)
+  execSync('git config user.name "test" && git config user.email "test@test"', { cwd: dir, stdio: 'pipe' });
   execSync('git commit --allow-empty -m "init"', { cwd: dir, stdio: 'pipe' });
   if (fetchUrl) {
     execSync(`git remote add origin "${fetchUrl}"`, { cwd: dir, stdio: 'pipe' });
@@ -212,5 +214,48 @@ describe('check-verdict-publish-contract', () => {
     } catch (err) {
       assert.match(err.stderr, /ARGS_MISSING/);
     }
+  });
+
+  // --- Source-ref census validation (P1 finding #1) ---
+
+  it('fails when source-ref lacks census but base-ref has it', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
+        seedCensus: true,
+      }),
+    );
+    // Create a branch where census is deleted
+    execSync('git checkout -b no-census', { cwd: dir, stdio: 'pipe' });
+    execSync('git rm -r docs/harness-feedback/registry && git commit -m "rm census"', { cwd: dir, stdio: 'pipe' });
+    const stderr = runExpectFail(dir, { baseRef: 'main', sourceRef: 'HEAD' });
+    assert.match(stderr, /CENSUS_MISSING_AT_SOURCE/);
+  });
+
+  it('passes when both base and source have census', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
+        seedCensus: true,
+      }),
+    );
+    // source = HEAD = main, same ref with census
+    run(dir, { baseRef: 'HEAD~0', sourceRef: 'HEAD' });
+  });
+
+  // --- Credential redaction (P1 finding #3) ---
+
+  it('redacts credential-bearing URLs in error messages', () => {
+    const dir = tracked(
+      makeRepo({
+        fetchUrl: `https://oauth2:sentinel-secret@github.com/${EXPECTED_REPO}.git`,
+      }),
+    );
+    const stderr = runExpectFail(dir, { identityOnly: true });
+    assert.match(stderr, /IDENTITY_FAILED/);
+    // The secret must NOT appear in stderr
+    assert.ok(!stderr.includes('sentinel-secret'), `secret leaked in stderr: ${stderr}`);
+    // Redacted placeholder should appear
+    assert.match(stderr, /\*\*\*:\*\*\*/);
   });
 });
