@@ -283,46 +283,50 @@ describe('check-verdict-publish-contract', () => {
     assert.match(stderr, /\*\*\*:\*\*\*/);
   });
 
-  // --- Bootstrap path (P1 finding #4) ---
-
-  it('allows bootstrap: base lacks census, source has census', () => {
+  it('strips query-token secrets from URLs on mismatch path', () => {
+    // P1 #3 round-3: lazy regex captured ?oauth_token=... into ownerRepo
     const dir = tracked(
       makeRepo({
-        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
-        // no seedCensus — base has no census
+        fetchUrl: `https://github.com/wrong-owner/clowder-ai.git?oauth_token=sentinel-query-secret`,
       }),
     );
-    // Create a branch that adds census (bootstrap: first publication)
+    const stderr = runExpectFail(dir, { identityOnly: true });
+    // Should be IDENTITY_MISMATCH (repo parsed, but wrong owner)
+    assert.match(stderr, /IDENTITY_MISMATCH/);
+    assert.ok(!stderr.includes('sentinel-query-secret'), `query token leaked in stderr: ${stderr}`);
+  });
+
+  // --- Bootstrap + ref resolution ---
+
+  it('allows bootstrap: base lacks census, source creates it', () => {
+    const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git` }));
     execSync('git checkout -b with-census', { cwd: dir, stdio: 'pipe' });
     const censusDir = resolve(dir, 'docs/harness-feedback/registry');
     mkdirSync(censusDir, { recursive: true });
     writeFileSync(resolve(censusDir, 'measurement-bundles.yaml'), 'entries: []\n');
     execSync('git add -A && git commit -m "add census"', { cwd: dir, stdio: 'pipe' });
-    // base = main (no census), source = HEAD (has census) → should pass
     run(dir, { baseRef: 'main', sourceRef: 'HEAD' });
   });
 
   it('allows bootstrap: both base and source lack census', () => {
-    const dir = tracked(
-      makeRepo({
-        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
-        // no seedCensus
-      }),
-    );
-    // Neither base nor source has census; this is a fresh bootstrap
+    const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git` }));
     run(dir, { baseRef: 'HEAD', sourceRef: 'HEAD' });
   });
 
-  // --- source-ref required (P2 follow-up) ---
+  it('rejects invalid base-ref (fail-closed, not fail-open)', () => {
+    const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git`, seedCensus: true }));
+    const stderr = runExpectFail(dir, { baseRef: 'nonexistent-ref', sourceRef: 'HEAD' });
+    assert.match(stderr, /INVALID_REF/);
+  });
+
+  it('rejects invalid source-ref', () => {
+    const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git`, seedCensus: true }));
+    const stderr = runExpectFail(dir, { baseRef: 'HEAD', sourceRef: 'nonexistent-source' });
+    assert.match(stderr, /INVALID_REF/);
+  });
 
   it('fails full mode when --source-ref is omitted', () => {
-    const dir = tracked(
-      makeRepo({
-        fetchUrl: `https://github.com/${EXPECTED_REPO}.git`,
-        seedCensus: true,
-      }),
-    );
-    // base-ref provided but no source-ref
+    const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git`, seedCensus: true }));
     const stderr = runExpectFail(dir, { baseRef: 'HEAD' });
     assert.match(stderr, /SOURCE_REF_REQUIRED/);
   });

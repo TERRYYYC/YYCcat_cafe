@@ -12,8 +12,10 @@
  *   2. Lifecycle-root required fields: validates the mandatory fields per
  *      schema version (v1/v2/v3), equivalent to LifecycleRootArtifactSchema.
  *   3. Snapshot structural: window.{startMs, endMs} must be present numbers.
- *   4. Same-domain/same-window collision: no two bundles with the same
- *      {domainId, startMs, endMs} triple (detects duplicated verdicts).
+ *   4. Duplicate verdictId detection: no two bundles may share the same
+ *      verdictId (identity collision guard; domain/window collision semantics
+ *      are domain-specific — e.g. friction emits aggregate + child bundles
+ *      with the same domain/window — and are handled by the publisher pipeline).
  *
  * Historical bundles that predate lifecycle-root.json are tolerated
  * (they only have attribution.json + provenance.json + snapshot.json).
@@ -128,8 +130,13 @@ const entries = readdirSync(bundlesDir, { withFileTypes: true })
   .filter((e) => e.isDirectory())
   .sort((a, b) => a.name.localeCompare(b.name));
 
-// Domain+window collision map: key = "domainId:startMs:endMs"
-const seenDomainWindows = new Map();
+// Duplicate verdictId detection. Directory names are unique on the filesystem,
+// but lifecycle-root.json verdictId must also be unique across all bundles
+// (a malformed generator could write the same verdictId into two different directories).
+// Domain+window collision is NOT checked here: friction legitimately emits
+// aggregate + child bundles for the same {domainId, startMs, endMs};
+// the publisher pipeline owns domain-specific collision semantics.
+const seenVerdictIds = new Map();
 
 for (const entry of entries) {
   const bundleDir = join(bundlesDir, entry.name);
@@ -182,16 +189,13 @@ for (const entry of entries) {
     snapshotWindow = { startMs: snap.window.startMs, endMs: snap.window.endMs };
   }
 
-  // Same-domain/same-window collision detection
-  if (snapshotWindow) {
-    const collisionKey = `${root.domainId}:${snapshotWindow.startMs}:${snapshotWindow.endMs}`;
-    if (seenDomainWindows.has(collisionKey)) {
-      fail(
-        'verdict_window_duplicated_in_candidate',
-        `domain '${root.domainId}' window [${snapshotWindow.startMs}, ${snapshotWindow.endMs}] ` +
-          `appears in multiple bundle directories: '${seenDomainWindows.get(collisionKey)}' and '${entry.name}'`,
-      );
-    }
-    seenDomainWindows.set(collisionKey, entry.name);
+  // Duplicate verdictId detection (cross-directory identity collision)
+  if (seenVerdictIds.has(root.verdictId)) {
+    fail(
+      'verdict_window_duplicated_in_candidate',
+      `verdictId '${root.verdictId}' declared in multiple bundle directories: ` +
+        `'${seenVerdictIds.get(root.verdictId)}' and '${entry.name}'`,
+    );
   }
+  seenVerdictIds.set(root.verdictId, entry.name);
 }

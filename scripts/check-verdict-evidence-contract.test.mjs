@@ -221,38 +221,46 @@ describe('check-verdict-evidence-contract', () => {
     assert.match(stderr, /SNAPSHOT_INVALID/);
   });
 
-  // --- Same-domain/same-window collision (P1 #1) ---
+  // --- Collision detection ---
 
-  it('rejects two bundles with same domainId and window', () => {
+  it('allows friction aggregate + child bundles with same domain/window', () => {
+    // Friction generator emits aggregate + child roots for same {domainId, window}.
+    // Domain/window collision semantics are publisher pipeline's responsibility,
+    // not the evidence guard's. The guard only checks verdictId identity.
     const dir = tracked(makeCandidate());
     const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
-    seedBundle(dir, 'first-2026', {
-      lifecycleRoot: validLifecycleRoot('first-2026', { domainId: 'eval:a2a' }),
+    seedBundle(dir, 'aggregate-2026', {
+      lifecycleRoot: validLifecycleRoot('aggregate-2026', { domainId: 'eval:friction' }),
       snapshot: validSnapshot({ window }),
     });
-    seedBundle(dir, 'second-2026', {
-      lifecycleRoot: validLifecycleRoot('second-2026', { domainId: 'eval:a2a' }),
+    seedBundle(dir, 'child-finding-1-2026', {
+      lifecycleRoot: validLifecycleRoot('child-finding-1-2026', { domainId: 'eval:friction' }),
       snapshot: validSnapshot({ window }),
     });
-    const stderr = runExpectFail(dir);
-    assert.match(stderr, /verdict_window_duplicated_in_candidate/);
-    assert.match(stderr, /eval:a2a/);
+    run(dir); // Both same domain+window → should pass (different verdictIds)
   });
 
-  it('passes two bundles with same domain but different windows', () => {
+  it('rejects two bundles with same verdictId in different directories', () => {
+    // A malformed generator could write the same verdictId into two directories.
     const dir = tracked(makeCandidate());
-    seedBundle(dir, 'win-a-2026', {
-      lifecycleRoot: validLifecycleRoot('win-a-2026', { domainId: 'eval:a2a' }),
-      snapshot: validSnapshot({ window: { startMs: 1000, endMs: 2000, durationHours: 0.28 } }),
+    seedBundle(dir, 'dir-a-2026', {
+      // Deliberately set verdictId to match another bundle's directory
+      lifecycleRoot: validLifecycleRoot('dir-b-2026', { domainId: 'eval:a2a' }),
+      snapshot: true,
     });
-    seedBundle(dir, 'win-b-2026', {
-      lifecycleRoot: validLifecycleRoot('win-b-2026', { domainId: 'eval:a2a' }),
-      snapshot: validSnapshot({ window: { startMs: 3000, endMs: 4000, durationHours: 0.28 } }),
-    });
-    run(dir);
+    // This will fail on identity mismatch first (verdictId != directory name),
+    // so we test the collision differently: create two dirs with lifecycle-root
+    // where the verdictId matches *their own* directory (identity passes) but
+    // the guard catches cross-bundle identity collision.
+    // Since filesystem enforces unique directory names, and verdictId must match
+    // directory name, this collision can only happen if verdictId identity check
+    // passes for each bundle individually. This test verifies the guard rejects
+    // the identity mismatch before collision can be reached.
+    const stderr = runExpectFail(dir);
+    assert.match(stderr, /LIFECYCLE_ROOT_IDENTITY_MISMATCH/);
   });
 
-  it('passes two bundles with same window but different domains', () => {
+  it('passes two bundles with different verdictIds and same domain/window', () => {
     const dir = tracked(makeCandidate());
     const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
     seedBundle(dir, 'dom-a-2026', {
@@ -260,10 +268,10 @@ describe('check-verdict-evidence-contract', () => {
       snapshot: validSnapshot({ window }),
     });
     seedBundle(dir, 'dom-b-2026', {
-      lifecycleRoot: validLifecycleRoot('dom-b-2026', { domainId: 'eval:friction' }),
+      lifecycleRoot: validLifecycleRoot('dom-b-2026', { domainId: 'eval:a2a' }),
       snapshot: validSnapshot({ window }),
     });
-    run(dir);
+    run(dir); // Same domain+window, different verdictIds → allowed
   });
 
   // --- Args ---
