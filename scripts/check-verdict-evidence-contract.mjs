@@ -8,12 +8,12 @@
  * of generated evidence artifacts in the candidate worktree.
  *
  * Checks:
- *   1. Lifecycle-root identity: every bundle with lifecycle-root.json has
- *      a verdictId matching its directory name.
- *   2. Same-domain/same-window collision: no two bundles in the candidate
- *      share the same verdictId (idempotency guard).
- *   3. Snapshot identity: each bundle with snapshot.json references a
- *      parseable JSON structure (structural, not semantic).
+ *   1. Lifecycle-root identity: verdictId must match bundle directory name.
+ *   2. Lifecycle-root required fields: validates the mandatory fields per
+ *      schema version (v1/v2/v3), equivalent to LifecycleRootArtifactSchema.
+ *   3. Snapshot structural: window.{startMs, endMs} must be present numbers.
+ *   4. Same-domain/same-window collision: no two bundles with the same
+ *      {domainId, startMs, endMs} triple (detects duplicated verdicts).
  *
  * Historical bundles that predate lifecycle-root.json are tolerated
  * (they only have attribution.json + provenance.json + snapshot.json).
@@ -44,6 +44,80 @@ function fail(code, detail) {
   process.exit(1);
 }
 
+// --- domainId format: must match ^eval:[a-z0-9][a-z0-9-]*$ ---
+const DOMAIN_ID_RE = /^eval:[a-z0-9][a-z0-9-]*$/;
+
+// --- Verdict enum (canonical LifecycleRootArtifactSchema) ---
+const VALID_VERDICTS = new Set(['delete_sunset', 'build', 'fix', 'keep_observe']);
+
+/**
+ * Validate lifecycle-root required fields per schema version.
+ * Mirrors LifecycleRootArtifactSchema (v1/v2/v3) without Zod imports.
+ */
+function validateLifecycleRoot(root, bundleName) {
+  const pfx = `${bundleName}/lifecycle-root.json`;
+
+  // --- Base fields (all versions) ---
+  requireString(root, 'verdictId', pfx);
+  requireString(root, 'domainId', pfx);
+  if (!DOMAIN_ID_RE.test(root.domainId)) {
+    fail('LIFECYCLE_ROOT_INVALID', `${pfx} domainId '${root.domainId}' does not match eval:xxx format`);
+  }
+  requireString(root, 'createdAt', pfx);
+  requireString(root, 'verdict', pfx);
+  if (!VALID_VERDICTS.has(root.verdict)) {
+    fail('LIFECYCLE_ROOT_INVALID', `${pfx} verdict '${root.verdict}' is not one of: ${[...VALID_VERDICTS].join(', ')}`);
+  }
+  requireObject(root, 'harnessUnderEval', pfx);
+  const hue = root.harnessUnderEval;
+  requireString(hue, 'featureId', `${pfx}.harnessUnderEval`);
+  requireString(hue, 'componentId', `${pfx}.harnessUnderEval`);
+  requireString(hue, 'name', `${pfx}.harnessUnderEval`);
+
+  requireObject(root, 'ownerAsk', pfx);
+  const oa = root.ownerAsk;
+  requireString(oa, 'targetFeatureId', `${pfx}.ownerAsk`);
+  requireString(oa, 'targetOwnerCatId', `${pfx}.ownerAsk`);
+  requireString(oa, 'requestedAction', `${pfx}.ownerAsk`);
+
+  requireObject(root, 'acceptanceReevalPlan', pfx);
+  const arp = root.acceptanceReevalPlan;
+  requireString(arp, 'nextEvalAt', `${pfx}.acceptanceReevalPlan`);
+  requireString(arp, 'closureCondition', `${pfx}.acceptanceReevalPlan`);
+
+  // --- Schema version ---
+  if (typeof root.schemaVersion !== 'number') {
+    fail('LIFECYCLE_ROOT_INVALID', `${pfx} missing schemaVersion`);
+  }
+  if (![1, 2, 3].includes(root.schemaVersion)) {
+    fail('LIFECYCLE_ROOT_INVALID', `${pfx} schemaVersion ${root.schemaVersion} is not 1, 2, or 3`);
+  }
+
+  // --- V2+ fields ---
+  if (root.schemaVersion >= 2) {
+    requireString(root, 'caseId', pfx);
+    requireString(root, 'findingKey', pfx);
+  }
+
+  // --- V3 fields ---
+  if (root.schemaVersion >= 3) {
+    requireObject(root, 'findingBinding', pfx);
+    requireObject(root, 'repairTarget', pfx);
+  }
+}
+
+function requireString(obj, key, pfx) {
+  if (typeof obj[key] !== 'string' || !obj[key].trim()) {
+    fail('LIFECYCLE_ROOT_INVALID', `${pfx} missing or empty required string field '${key}'`);
+  }
+}
+
+function requireObject(obj, key, pfx) {
+  if (typeof obj[key] !== 'object' || obj[key] === null || Array.isArray(obj[key])) {
+    fail('LIFECYCLE_ROOT_INVALID', `${pfx} missing or invalid required object field '${key}'`);
+  }
+}
+
 const bundlesDir = join(candidateRoot, 'docs/harness-feedback/bundles');
 if (!existsSync(bundlesDir)) {
   // No bundles directory = nothing to validate (fresh repo bootstrap)
@@ -54,7 +128,8 @@ const entries = readdirSync(bundlesDir, { withFileTypes: true })
   .filter((e) => e.isDirectory())
   .sort((a, b) => a.name.localeCompare(b.name));
 
-const seenVerdictIds = new Map();
+// Domain+window collision map: key = "domainId:startMs:endMs"
+const seenDomainWindows = new Map();
 
 for (const entry of entries) {
   const bundleDir = join(bundlesDir, entry.name);
@@ -81,31 +156,42 @@ for (const entry of entries) {
     );
   }
 
-  // Required fields: domainId, schemaVersion
-  if (typeof root.domainId !== 'string' || !root.domainId) {
-    fail('LIFECYCLE_ROOT_INVALID', `${entry.name}/lifecycle-root.json missing domainId`);
-  }
-  if (typeof root.schemaVersion !== 'number') {
-    fail('LIFECYCLE_ROOT_INVALID', `${entry.name}/lifecycle-root.json missing schemaVersion`);
-  }
+  // Full structural validation (canonical schema fields)
+  validateLifecycleRoot(root, entry.name);
 
-  // Same-domain collision: no two bundles with same verdictId
-  if (seenVerdictIds.has(root.verdictId)) {
-    fail(
-      'verdict_window_duplicated_in_candidate',
-      `verdictId '${root.verdictId}' appears in multiple bundle directories: ` +
-        `'${seenVerdictIds.get(root.verdictId)}' and '${entry.name}'`,
-    );
-  }
-  seenVerdictIds.set(root.verdictId, entry.name);
-
-  // Snapshot structural check (if present)
+  // Snapshot structural + window extraction
   const snapshotPath = join(bundleDir, 'snapshot.json');
+  let snapshotWindow = null;
   if (existsSync(snapshotPath)) {
+    let snap;
     try {
-      JSON.parse(readFileSync(snapshotPath, 'utf8'));
+      snap = JSON.parse(readFileSync(snapshotPath, 'utf8'));
     } catch (err) {
       fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json is not valid JSON: ${err.message}`);
     }
+    // Snapshot must have window.{startMs, endMs}
+    if (typeof snap.window !== 'object' || snap.window === null) {
+      fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json missing required 'window' object`);
+    }
+    if (typeof snap.window.startMs !== 'number') {
+      fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json window.startMs must be a number`);
+    }
+    if (typeof snap.window.endMs !== 'number') {
+      fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json window.endMs must be a number`);
+    }
+    snapshotWindow = { startMs: snap.window.startMs, endMs: snap.window.endMs };
+  }
+
+  // Same-domain/same-window collision detection
+  if (snapshotWindow) {
+    const collisionKey = `${root.domainId}:${snapshotWindow.startMs}:${snapshotWindow.endMs}`;
+    if (seenDomainWindows.has(collisionKey)) {
+      fail(
+        'verdict_window_duplicated_in_candidate',
+        `domain '${root.domainId}' window [${snapshotWindow.startMs}, ${snapshotWindow.endMs}] ` +
+          `appears in multiple bundle directories: '${seenDomainWindows.get(collisionKey)}' and '${entry.name}'`,
+      );
+    }
+    seenDomainWindows.set(collisionKey, entry.name);
   }
 }
