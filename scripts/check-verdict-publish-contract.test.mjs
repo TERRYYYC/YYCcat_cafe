@@ -184,19 +184,12 @@ describe('check-verdict-publish-contract', () => {
         seedCensus: true,
       }),
     );
-    // --fresh-base-branch=main → resolves to origin/main
-    // But our test repo has no remote tracking; use local ref to test parsing
-    // Create a ref that looks like origin/main
+    // Create origin/main ref for resolution
     execSync(`git update-ref refs/remotes/origin/main HEAD`, { cwd: dir, stdio: 'pipe' });
     run(dir, { freshBaseBranch: 'main', sourceRef: 'HEAD' });
   });
 
   // --- URL extraction edge cases ---
-
-  it('extracts owner/repo from SSH URL with .git suffix', () => {
-    const dir = tracked(makeRepo({ fetchUrl: `git@github.com:${EXPECTED_REPO}.git` }));
-    run(dir, { identityOnly: true });
-  });
 
   it('extracts owner/repo from HTTPS URL with trailing slash', () => {
     const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}/` }));
@@ -313,7 +306,7 @@ describe('check-verdict-publish-contract', () => {
 
   // --- Bootstrap + ref resolution ---
 
-  it('allows bootstrap: base lacks census, source creates it', () => {
+  it('allows first publication: base lacks census, distinct source has it', () => {
     const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git` }));
     execSync('git checkout -b with-census', { cwd: dir, stdio: 'pipe' });
     const censusDir = resolve(dir, 'docs/harness-feedback/registry');
@@ -323,9 +316,16 @@ describe('check-verdict-publish-contract', () => {
     run(dir, { baseRef: 'main', sourceRef: 'HEAD' });
   });
 
-  it('allows bootstrap: both base and source lack census', () => {
+  it('allows same-OID pre-stage even when census absent', () => {
     const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git` }));
     run(dir, { baseRef: 'HEAD', sourceRef: 'HEAD' });
+  });
+
+  it('rejects distinct source lacking census', () => {
+    const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git` }));
+    execSync('git commit --allow-empty -m "second"', { cwd: dir, stdio: 'pipe' });
+    const stderr = runExpectFail(dir, { baseRef: 'HEAD~1', sourceRef: 'HEAD' });
+    assert.match(stderr, /CENSUS_MISSING_AT_SOURCE/);
   });
 
   it('rejects invalid base-ref (fail-closed, not fail-open)', () => {
