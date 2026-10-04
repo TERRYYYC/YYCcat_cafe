@@ -204,8 +204,10 @@ for (const entry of entries) {
   const isFrictionChild =
     root.schemaVersion >= 3 &&
     root.domainId === 'eval:friction' &&
-    typeof root.findingBinding === 'object' && root.findingBinding !== null &&
-    typeof root.repairTarget === 'object' && root.repairTarget !== null;
+    typeof root.findingBinding === 'object' &&
+    root.findingBinding !== null &&
+    typeof root.repairTarget === 'object' &&
+    root.repairTarget !== null;
   if (windowMap.has(windowKey)) {
     const existing = windowMap.get(windowKey);
     // Allow if both are in the same friction family (either is a v3 child)

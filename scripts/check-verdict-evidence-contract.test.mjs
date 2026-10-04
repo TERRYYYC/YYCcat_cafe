@@ -51,7 +51,8 @@ function seedBundle(candidateRoot, verdictId, { lifecycleRoot, snapshot, provena
     writeFileSync(resolve(bundleDir, 'snapshot.json'), typeof data === 'string' ? data : JSON.stringify(data));
   }
   // Auto-seed valid provenance.json when lifecycle-root exists (unless explicit)
-  const prov = provenance ?? (lifecycleRoot !== undefined ? { generatedBy: 'test', generatedAt: '2026-01-01' } : undefined);
+  const prov =
+    provenance ?? (lifecycleRoot !== undefined ? { generatedBy: 'test', generatedAt: '2026-01-01' } : undefined);
   if (prov !== undefined && prov !== false) {
     const pd = typeof prov === 'string' ? prov : JSON.stringify(prov);
     writeFileSync(resolve(bundleDir, 'provenance.json'), pd);
@@ -257,8 +258,10 @@ describe('check-verdict-evidence-contract', () => {
     const dir = tracked(makeCandidate());
     const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
     const v3Fields = {
-      schemaVersion: 3, caseId: 'eval-case-v1-' + 'a'.repeat(64),
-      findingKey: 'test-key', findingBinding: { kind: 'test' },
+      schemaVersion: 3,
+      caseId: `eval-case-v1-${'a'.repeat(64)}`,
+      findingKey: 'test-key',
+      findingBinding: { kind: 'test' },
       repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
     };
     seedBundle(dir, 'child-a-2026', {
@@ -276,8 +279,10 @@ describe('check-verdict-evidence-contract', () => {
     const dir = tracked(makeCandidate());
     const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
     const v3Fields = {
-      schemaVersion: 3, caseId: 'eval-case-v1-' + 'a'.repeat(64),
-      findingKey: 'test-key', findingBinding: { kind: 'test' },
+      schemaVersion: 3,
+      caseId: `eval-case-v1-${'a'.repeat(64)}`,
+      findingKey: 'test-key',
+      findingBinding: { kind: 'test' },
       repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
     };
     seedBundle(dir, 'v3-wrong-a-2026', {

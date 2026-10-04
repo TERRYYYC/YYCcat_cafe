@@ -178,6 +178,25 @@ if (isVerdictPrCreate()) {
     process.exit(guard.status ?? 1);
   }
 
+  // Fail closed on dirty/untracked evidence — working tree might not match committed HEAD.
+  // The evidence guard uses readFileSync; dirty overlays could mask committed defects.
+  const dirtyEvidence = gitOutput(['diff', '--name-only', 'HEAD', '--', 'docs/harness-feedback/']);
+  const untrackedEvidence = gitOutput([
+    'ls-files', '--others', '--exclude-standard', '--', 'docs/harness-feedback/',
+  ]);
+  if (dirtyEvidence || untrackedEvidence) {
+    const files = [
+      ...(dirtyEvidence ? dirtyEvidence.split('\n') : []),
+      ...(untrackedEvidence ? untrackedEvidence.split('\n') : []),
+    ].filter(Boolean);
+    fail(
+      'verdict_publish_dirty_evidence',
+      `evidence files are dirty or untracked (${files.slice(0, 3).join(', ')}` +
+        `${files.length > 3 ? ', ...' : ''}); ` +
+        'commit or stash them so the guard validates committed bytes',
+    );
+  }
+
   // Evidence contract: validate lifecycle-root + snapshot + provenance structure
   // before evidence reaches the delegated `gh pr create`. Mirrors the contract
   // runner's post-commit evidence call (verdict-publish-contract-runner.ts:65-84).

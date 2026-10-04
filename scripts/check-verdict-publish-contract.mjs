@@ -84,9 +84,10 @@ function redactUrl(url) {
   // [^/]* is greedy — matches everything up to the LAST @ before the host,
   // so double-@ URLs like scheme://user:pass@extra-secret@host are fully redacted.
   let redacted = clean.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/]*@/, '$1***:***@');
-  // Redact SCP-style userinfo (user@host:path / user:pass@host:path — no scheme://)
+  // Redact SCP-style userinfo (user@host:path / user:pass@host:path — no scheme://).
+  // ^.*@ is greedy — matches through the LAST @ (handles double-@ like prefix@secret@host).
   if (!redacted.includes('://') && redacted.includes('@')) {
-    redacted = redacted.replace(/^[^@]+@/, '***@');
+    redacted = redacted.replace(/^.*@/, '***@');
   }
   // Strip all query strings and fragments — they may contain tokens/secrets
   // (oauth_token, access_token, etc.) and are not needed for diagnostics

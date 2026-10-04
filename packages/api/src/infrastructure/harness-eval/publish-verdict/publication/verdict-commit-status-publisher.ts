@@ -8,7 +8,8 @@ const FULL_SHA = /^[a-f0-9]{40}$/;
 const REPO_FULL_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 export const EVAL_METRIC_GLOSSARY_CHECK_NAME = 'Eval Metric Glossary Coverage';
-const EVIDENCE_CONTRACT_SUCCESS_DESCRIPTION = 'Candidate glossary, measurement, and publication contracts passed';
+const EVIDENCE_CONTRACT_SUCCESS_DESCRIPTION =
+  'Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed';
 
 export function verdictEvidenceContractSuccessStatuses(): VerdictCommitStatus[] {
   return [

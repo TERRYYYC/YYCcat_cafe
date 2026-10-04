@@ -175,7 +175,7 @@ describe('handlePublishVerdict — AC-H2 pipeline', () => {
         {
           context: 'Eval Metric Glossary Coverage',
           state: 'success',
-          description: 'Candidate glossary, measurement, and publication contracts passed',
+          description: 'Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed',
         },
       ]);
 

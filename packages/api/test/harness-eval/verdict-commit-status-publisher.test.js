@@ -17,7 +17,7 @@ describe('verdict commit status publisher', () => {
           {
             context: EVAL_METRIC_GLOSSARY_CHECK_NAME,
             state: 'success',
-            description: 'Candidate glossary, measurement, and publication contracts passed',
+            description: 'Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed',
           },
         ],
       },
@@ -36,7 +36,7 @@ describe('verdict commit status publisher', () => {
         '--raw-field',
         'context=Eval Metric Glossary Coverage',
         '--raw-field',
-        'description=Candidate glossary, measurement, and publication contracts passed',
+        'description=Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed',
       ],
     ]);
   });
@@ -51,7 +51,7 @@ describe('verdict commit status publisher', () => {
         {
           context: EVAL_METRIC_GLOSSARY_CHECK_NAME,
           state: 'success',
-          description: 'Candidate glossary, measurement, and publication contracts passed',
+          description: 'Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed',
         },
       ],
     };

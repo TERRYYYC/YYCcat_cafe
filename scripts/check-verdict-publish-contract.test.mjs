@@ -289,11 +289,14 @@ describe('check-verdict-publish-contract', () => {
     assert.ok(!stderr.includes('sentinel-query-secret'), `query token leaked in stderr: ${stderr}`);
   });
 
-  it('redacts SCP-style userinfo on parse-failure path', () => {
-    const dir = tracked(makeRepo({ fetchUrl: `sentinel-scp-user@github.com:${EXPECTED_REPO}.git` }));
+  it('redacts SCP-style userinfo including double-@ through last @', () => {
+    const dir = tracked(
+      makeRepo({ fetchUrl: `sentinel-scp-prefix@sentinel-scp-secret@github.com:${EXPECTED_REPO}.git` }),
+    );
     const stderr = runExpectFail(dir, { identityOnly: true });
     assert.match(stderr, /IDENTITY_FAILED/);
-    assert.ok(!stderr.includes('sentinel-scp-user'), `SCP userinfo leaked: ${stderr}`);
+    assert.ok(!stderr.includes('sentinel-scp-prefix'), `SCP first credential leaked: ${stderr}`);
+    assert.ok(!stderr.includes('sentinel-scp-secret'), `SCP second credential leaked: ${stderr}`);
     assert.match(stderr, /\*\*\*@/);
   });
 
@@ -328,16 +331,10 @@ describe('check-verdict-publish-contract', () => {
     assert.match(stderr, /CENSUS_MISSING_AT_SOURCE/);
   });
 
-  it('rejects invalid base-ref (fail-closed, not fail-open)', () => {
+  it('rejects invalid base-ref and source-ref (fail-closed, not fail-open)', () => {
     const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git`, seedCensus: true }));
-    const stderr = runExpectFail(dir, { baseRef: 'nonexistent-ref', sourceRef: 'HEAD' });
-    assert.match(stderr, /INVALID_REF/);
-  });
-
-  it('rejects invalid source-ref', () => {
-    const dir = tracked(makeRepo({ fetchUrl: `https://github.com/${EXPECTED_REPO}.git`, seedCensus: true }));
-    const stderr = runExpectFail(dir, { baseRef: 'HEAD', sourceRef: 'nonexistent-source' });
-    assert.match(stderr, /INVALID_REF/);
+    assert.match(runExpectFail(dir, { baseRef: 'nonexistent-ref', sourceRef: 'HEAD' }), /INVALID_REF/);
+    assert.match(runExpectFail(dir, { baseRef: 'HEAD', sourceRef: 'nonexistent-source' }), /INVALID_REF/);
   });
 
   it('fails full mode when --source-ref is omitted', () => {
