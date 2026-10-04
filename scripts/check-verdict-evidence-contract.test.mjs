@@ -84,12 +84,19 @@ function tracked(dir) {
 }
 
 const COLLISION_WINDOW = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
+/** Canonical FindingBindingV1 stub with valid artifactSha256. */
+const CANONICAL_BINDING = {
+  artifactRef: 'findings/test-finding.json',
+  artifactSha256: 'a'.repeat(64),
+  analysisDisposition: 'repair',
+  approvalRequirement: { kind: 'required', reason: 'repair' },
+};
 function v3CollisionFields(overrides = {}) {
   return {
     schemaVersion: 3,
     caseId: `eval-case-v1-${'a'.repeat(64)}`,
     findingKey: 'test-key',
-    findingBinding: { kind: 'test' },
+    findingBinding: CANONICAL_BINDING,
     repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
     ...overrides,
   };
@@ -266,12 +273,9 @@ describe('check-verdict-evidence-contract', () => {
 
   // --- Collision detection ---
 
-  it('allows friction v3 children with parent lineage and same domain/window', () => {
+  it('allows friction v3 children with canonical binding and same domain/window', () => {
     const dir = tracked(makeCandidate());
-    const fields = v3CollisionFields({
-      findingBinding: { kind: 'test', findingDigest: 'sha256:abc123' },
-      parentVerdictId: 'parent-aggregate-2026',
-    });
+    const fields = v3CollisionFields(); // CANONICAL_BINDING has valid artifactSha256
     seedBundle(dir, 'child-a-2026', {
       lifecycleRoot: validLifecycleRoot('child-a-2026', { domainId: 'eval:friction', ...fields }),
       snapshot: validSnapshot({ window: COLLISION_WINDOW }),
@@ -283,9 +287,10 @@ describe('check-verdict-evidence-contract', () => {
     run(dir);
   });
 
-  it('rejects friction v3 without parentVerdictId (forged lineage)', () => {
+  it('rejects friction v3 without canonical artifactSha256 (forged binding)', () => {
     const dir = tracked(makeCandidate());
-    const fields = v3CollisionFields(); // No parentVerdictId — forged child
+    // Forged: has object-shaped binding but no valid 64-char hex artifactSha256
+    const fields = v3CollisionFields({ findingBinding: { kind: 'test' } });
     seedBundle(dir, 'fake-child-a-2026', {
       lifecycleRoot: validLifecycleRoot('fake-child-a-2026', { domainId: 'eval:friction', ...fields }),
       snapshot: validSnapshot({ window: COLLISION_WINDOW }),

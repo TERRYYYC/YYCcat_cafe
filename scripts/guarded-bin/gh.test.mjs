@@ -138,6 +138,43 @@ describe('guarded-bin/gh wrapper', () => {
     assert.match(stderr, /verdict_publish_head_mismatch/);
   });
 
+  it('fails evidence guard on committed malformed lifecycle-root (proves both guards run)', () => {
+    const dir = tracked(makeVerdictRepo());
+    // Seed committed evidence with mismatched verdictId: transport passes, evidence fails
+    const bundleDir = resolve(dir, 'docs/harness-feedback/bundles/malformed-2026');
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(
+      resolve(bundleDir, 'lifecycle-root.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        verdictId: 'WRONG-ID',
+        domainId: 'eval:a2a',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        verdict: 'keep_observe',
+        harnessUnderEval: { featureId: 'F1', componentId: 'C1', name: 'test' },
+        ownerAsk: { targetFeatureId: 'F1', targetOwnerCatId: 'opus', requestedAction: 'observe' },
+        acceptanceReevalPlan: { nextEvalAt: '2026-02-01T00:00:00.000Z', closureCondition: 'stable' },
+      }),
+    );
+    writeFileSync(resolve(bundleDir, 'snapshot.json'), JSON.stringify({ window: { startMs: 1, endMs: 2 } }));
+    writeFileSync(resolve(bundleDir, 'provenance.json'), JSON.stringify({ generatedBy: 'test' }));
+    const censusDir = resolve(dir, 'docs/harness-feedback/registry');
+    mkdirSync(censusDir, { recursive: true });
+    writeFileSync(resolve(censusDir, 'measurement-bundles.yaml'), 'entries: []\n');
+    execSync('git add -A && git commit -m "malformed evidence"', { cwd: dir, stdio: 'pipe' });
+    const stderr = runWrapperExpectFail(dir, [
+      'pr',
+      'create',
+      '--repo',
+      EXPECTED_REPO,
+      '--title',
+      'verdict(eval:a2a): test',
+      '--base',
+      'main',
+    ]);
+    assert.match(stderr, /LIFECYCLE_ROOT_IDENTITY_MISMATCH/);
+  });
+
   it('rejects push to wrong repository', () => {
     const dir = tracked(makeVerdictRepo({ seedEvidence: true }));
     const stderr = runWrapperExpectFail(dir, [

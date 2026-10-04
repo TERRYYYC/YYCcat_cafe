@@ -199,19 +199,20 @@ for (const entry of entries) {
 
   // Domain+window collision detection
   const windowKey = `${root.domainId}:${snap.window.startMs}:${snap.window.endMs}`;
-  // Schema-v3 friction child: must be eval:friction domain, have binding/target with
-  // canonical structure, AND declare parentVerdictId for lineage verification.
-  // Non-friction domains or children without parent lineage are NOT exempt.
+  // Schema-v3 friction child: must be eval:friction domain with canonical
+  // FindingBindingV1 (artifactSha256 = 64-char lowercase hex) proving a real
+  // binding to a finding artifact. parentVerdictId is in the finding artifact,
+  // not the lifecycle root — structural presence of a valid binding hash is the
+  // root-level signal that this is a legitimate friction child.
   const isFrictionChild =
     root.schemaVersion >= 3 &&
     root.domainId === 'eval:friction' &&
     typeof root.findingBinding === 'object' &&
     root.findingBinding !== null &&
-    typeof root.findingBinding.findingDigest === 'string' &&
+    typeof root.findingBinding.artifactSha256 === 'string' &&
+    /^[a-f0-9]{64}$/.test(root.findingBinding.artifactSha256) &&
     typeof root.repairTarget === 'object' &&
-    root.repairTarget !== null &&
-    typeof root.parentVerdictId === 'string' &&
-    root.parentVerdictId.length > 0;
+    root.repairTarget !== null;
   if (windowMap.has(windowKey)) {
     const existing = windowMap.get(windowKey);
     // Allow if both are in the same friction family (either is a v3 child)

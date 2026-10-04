@@ -253,8 +253,8 @@ gh pr view N --json labels --jq '.labels[].name' | rg -q '^evidence-only$' \
 # Condition #10: the publisher's exact-commit evidence contract status must pass.
 gh pr checks N | rg -q '^Eval Evidence Structural Contract.*pass' \
   || echo "FAIL #10: Eval Evidence Structural Contract is missing, pending, or failing"
-# Local reproduction when the status is red:
-pnpm check:eval-metric-glossary
+# Local reproduction when the structural contract status is red:
+pnpm check:verdict-publish-contract
 
 # 3. If all 10 pass: squash merge
 gh pr merge N --squash --delete-branch
