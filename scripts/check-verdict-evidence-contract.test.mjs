@@ -231,10 +231,8 @@ describe('check-verdict-evidence-contract', () => {
 
   it('rejects missing snapshot when lifecycle-root exists', () => {
     const dir = tracked(makeCandidate());
-    seedBundle(dir, 'no-snap-2026', { lifecycleRoot: true, snapshot: undefined, provenance: false });
-    // Force: lifecycle-root exists but no snapshot
-    const bundleDir = resolve(dir, 'docs/harness-feedback/bundles/no-snap-2026');
-    writeFileSync(resolve(bundleDir, 'provenance.json'), '{}');
+    // Use valid provenance (not {}); snapshot check fires before provenance
+    seedBundle(dir, 'no-snap-2026', { lifecycleRoot: true, snapshot: undefined });
     const stderr = runExpectFail(dir);
     assert.match(stderr, /SNAPSHOT_MISSING/);
   });
@@ -244,6 +242,13 @@ describe('check-verdict-evidence-contract', () => {
     seedBundle(dir, 'no-prov-2026', { lifecycleRoot: true, snapshot: true, provenance: false });
     const stderr = runExpectFail(dir);
     assert.match(stderr, /PROVENANCE_MISSING/);
+  });
+
+  it('rejects empty provenance object (P1 #2)', () => {
+    const dir = tracked(makeCandidate());
+    seedBundle(dir, 'empty-prov-2026', { lifecycleRoot: true, snapshot: true, provenance: {} });
+    const stderr = runExpectFail(dir);
+    assert.match(stderr, /PROVENANCE_EMPTY/);
   });
 
   // --- Collision detection ---
@@ -265,6 +270,26 @@ describe('check-verdict-evidence-contract', () => {
       snapshot: validSnapshot({ window }),
     });
     run(dir); // v3 friction children share domain+window → allowed
+  });
+
+  it('rejects v3 with binding+target but non-friction domain (P1 #1)', () => {
+    const dir = tracked(makeCandidate());
+    const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
+    const v3Fields = {
+      schemaVersion: 3, caseId: 'eval-case-v1-' + 'a'.repeat(64),
+      findingKey: 'test-key', findingBinding: { kind: 'test' },
+      repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
+    };
+    seedBundle(dir, 'v3-wrong-a-2026', {
+      lifecycleRoot: validLifecycleRoot('v3-wrong-a-2026', { domainId: 'eval:a2a', ...v3Fields }),
+      snapshot: validSnapshot({ window }),
+    });
+    seedBundle(dir, 'v3-wrong-b-2026', {
+      lifecycleRoot: validLifecycleRoot('v3-wrong-b-2026', { domainId: 'eval:a2a', ...v3Fields }),
+      snapshot: validSnapshot({ window }),
+    });
+    const stderr = runExpectFail(dir);
+    assert.match(stderr, /WINDOW_COLLISION/);
   });
 
   it('rejects non-friction bundles with same domain/window (collision)', () => {

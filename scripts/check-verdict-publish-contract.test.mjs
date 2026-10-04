@@ -238,17 +238,17 @@ describe('check-verdict-publish-contract', () => {
 
   // --- Credential redaction (P1 finding #3) ---
 
-  it('redacts credential-bearing URLs in error messages', () => {
+  it('redacts credential-bearing URLs including double-@ (P1 #4)', () => {
     const dir = tracked(
       makeRepo({
-        fetchUrl: `https://oauth2:sentinel-secret@github.com/${EXPECTED_REPO}.git`,
+        fetchUrl: `https://oauth2:sentinel-prefix@sentinel-secret@github.com/${EXPECTED_REPO}.git`,
       }),
     );
     const stderr = runExpectFail(dir, { identityOnly: true });
     assert.match(stderr, /IDENTITY_FAILED/);
-    // The secret must NOT appear in stderr
-    assert.ok(!stderr.includes('sentinel-secret'), `secret leaked in stderr: ${stderr}`);
-    // Redacted placeholder should appear
+    // Neither credential segment must appear in stderr
+    assert.ok(!stderr.includes('sentinel-prefix'), `first credential leaked: ${stderr}`);
+    assert.ok(!stderr.includes('sentinel-secret'), `second credential leaked: ${stderr}`);
     assert.match(stderr, /\*\*\*:\*\*\*/);
   });
 

@@ -190,16 +190,20 @@ for (const entry of entries) {
     if (typeof prov !== 'object' || prov === null || Array.isArray(prov)) {
       fail('PROVENANCE_INVALID', `${entry.name}/provenance.json must be a JSON object`);
     }
+    if (Object.keys(prov).length === 0) {
+      fail('PROVENANCE_EMPTY', `${entry.name}/provenance.json is an empty object — provenance must have content`);
+    }
   } catch (err) {
     fail('PROVENANCE_INVALID', `${entry.name}/provenance.json is not valid JSON: ${err.message}`);
   }
 
   // Domain+window collision detection
   const windowKey = `${root.domainId}:${snap.window.startMs}:${snap.window.endMs}`;
-  // Schema-v3 with findingBinding + repairTarget = friction child: exempt from
-  // collision check (they share parent's domain+window by design).
+  // Schema-v3 friction child: must be eval:friction domain AND have binding/target.
+  // Non-friction domains with v3 structure are NOT exempt from collision checks.
   const isFrictionChild =
     root.schemaVersion >= 3 &&
+    root.domainId === 'eval:friction' &&
     typeof root.findingBinding === 'object' && root.findingBinding !== null &&
     typeof root.repairTarget === 'object' && root.repairTarget !== null;
   if (windowMap.has(windowKey)) {

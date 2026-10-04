@@ -80,8 +80,10 @@ function extractOwnerRepo(url) {
 function redactUrl(url) {
   // Strip control characters (C0 + DEL) by filtering codepoints
   const clean = [...url].filter((ch) => ch.charCodeAt(0) > 0x1f && ch.charCodeAt(0) !== 0x7f).join('');
-  // Redact userinfo in ANY scheme://...@host (case-insensitive scheme)
-  let redacted = clean.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^@/]+@/, '$1***:***@');
+  // Redact userinfo in ANY scheme://...@host (case-insensitive scheme).
+  // [^/]* is greedy — matches everything up to the LAST @ before the host,
+  // so double-@ URLs like scheme://user:pass@extra-secret@host are fully redacted.
+  let redacted = clean.replace(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/]*@/, '$1***:***@');
   // Redact SCP-style userinfo (user@host:path / user:pass@host:path — no scheme://)
   if (!redacted.includes('://') && redacted.includes('@')) {
     redacted = redacted.replace(/^[^@]+@/, '***@');

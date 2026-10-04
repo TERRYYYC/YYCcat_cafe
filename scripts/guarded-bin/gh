@@ -136,6 +136,25 @@ if (isVerdictPrCreate()) {
   }
   const repoRoot = gitOutput(['rev-parse', '--show-toplevel']);
   if (!repoRoot) fail('verdict_publish_guard_unavailable', 'current directory is not a git repository');
+
+  // Verify --head branch matches local HEAD. If they diverge, guards would
+  // validate the wrong tree (e.g. caller on main but --head points to verdict branch).
+  const headBranch = optionValue('head');
+  if (headBranch) {
+    const headRef = gitOutput(['rev-parse', '--verify', headBranch]);
+    const localHead = gitOutput(['rev-parse', 'HEAD']);
+    if (!headRef) {
+      fail('verdict_publish_head_unresolvable', `--head '${headBranch}' does not resolve to a local ref`);
+    }
+    if (headRef !== localHead) {
+      fail(
+        'verdict_publish_head_mismatch',
+        `--head '${headBranch}' resolves to ${headRef.slice(0, 11)} but local HEAD is ` +
+          `${localHead.slice(0, 11)} — run from the proposed branch so guards validate correct evidence`,
+      );
+    }
+  }
+
   const baseBranch = optionValue('base') ?? 'main';
   const guard = spawnSync(
     process.execPath,
