@@ -83,6 +83,18 @@ function tracked(dir) {
   return dir;
 }
 
+const COLLISION_WINDOW = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
+function v3CollisionFields(overrides = {}) {
+  return {
+    schemaVersion: 3,
+    caseId: `eval-case-v1-${'a'.repeat(64)}`,
+    findingKey: 'test-key',
+    findingBinding: { kind: 'test' },
+    repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
+    ...overrides,
+  };
+}
+
 describe('check-verdict-evidence-contract', () => {
   after(() => {
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
@@ -254,59 +266,48 @@ describe('check-verdict-evidence-contract', () => {
 
   // --- Collision detection ---
 
-  it('allows friction v3 children with same domain/window (parent lineage)', () => {
+  it('allows friction v3 children with parent lineage and same domain/window', () => {
     const dir = tracked(makeCandidate());
-    const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
-    const v3Fields = {
-      schemaVersion: 3,
-      caseId: `eval-case-v1-${'a'.repeat(64)}`,
-      findingKey: 'test-key',
-      findingBinding: { kind: 'test' },
-      repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
-    };
+    const fields = v3CollisionFields({
+      findingBinding: { kind: 'test', findingDigest: 'sha256:abc123' },
+      parentVerdictId: 'parent-aggregate-2026',
+    });
     seedBundle(dir, 'child-a-2026', {
-      lifecycleRoot: validLifecycleRoot('child-a-2026', { domainId: 'eval:friction', ...v3Fields }),
-      snapshot: validSnapshot({ window }),
+      lifecycleRoot: validLifecycleRoot('child-a-2026', { domainId: 'eval:friction', ...fields }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
     seedBundle(dir, 'child-b-2026', {
-      lifecycleRoot: validLifecycleRoot('child-b-2026', { domainId: 'eval:friction', ...v3Fields }),
-      snapshot: validSnapshot({ window }),
+      lifecycleRoot: validLifecycleRoot('child-b-2026', { domainId: 'eval:friction', ...fields }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
-    run(dir); // v3 friction children share domain+window → allowed
+    run(dir);
   });
 
-  it('rejects v3 with binding+target but non-friction domain (P1 #1)', () => {
+  it('rejects friction v3 without parentVerdictId (forged lineage)', () => {
     const dir = tracked(makeCandidate());
-    const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
-    const v3Fields = {
-      schemaVersion: 3,
-      caseId: `eval-case-v1-${'a'.repeat(64)}`,
-      findingKey: 'test-key',
-      findingBinding: { kind: 'test' },
-      repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
-    };
-    seedBundle(dir, 'v3-wrong-a-2026', {
-      lifecycleRoot: validLifecycleRoot('v3-wrong-a-2026', { domainId: 'eval:a2a', ...v3Fields }),
-      snapshot: validSnapshot({ window }),
+    const fields = v3CollisionFields(); // No parentVerdictId — forged child
+    seedBundle(dir, 'fake-child-a-2026', {
+      lifecycleRoot: validLifecycleRoot('fake-child-a-2026', { domainId: 'eval:friction', ...fields }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
-    seedBundle(dir, 'v3-wrong-b-2026', {
-      lifecycleRoot: validLifecycleRoot('v3-wrong-b-2026', { domainId: 'eval:a2a', ...v3Fields }),
-      snapshot: validSnapshot({ window }),
+    seedBundle(dir, 'fake-child-b-2026', {
+      lifecycleRoot: validLifecycleRoot('fake-child-b-2026', { domainId: 'eval:friction', ...fields }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
     const stderr = runExpectFail(dir);
     assert.match(stderr, /WINDOW_COLLISION/);
   });
 
-  it('rejects non-friction bundles with same domain/window (collision)', () => {
+  it('rejects v3 with binding+target but non-friction domain (P1 #1)', () => {
     const dir = tracked(makeCandidate());
-    const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
-    seedBundle(dir, 'dup-a-2026', {
-      lifecycleRoot: validLifecycleRoot('dup-a-2026', { domainId: 'eval:a2a' }),
-      snapshot: validSnapshot({ window }),
+    const fields = v3CollisionFields();
+    seedBundle(dir, 'v3-wrong-a-2026', {
+      lifecycleRoot: validLifecycleRoot('v3-wrong-a-2026', { domainId: 'eval:a2a', ...fields }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
-    seedBundle(dir, 'dup-b-2026', {
-      lifecycleRoot: validLifecycleRoot('dup-b-2026', { domainId: 'eval:a2a' }),
-      snapshot: validSnapshot({ window }),
+    seedBundle(dir, 'v3-wrong-b-2026', {
+      lifecycleRoot: validLifecycleRoot('v3-wrong-b-2026', { domainId: 'eval:a2a', ...fields }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
     const stderr = runExpectFail(dir);
     assert.match(stderr, /WINDOW_COLLISION/);
@@ -314,16 +315,15 @@ describe('check-verdict-evidence-contract', () => {
 
   it('allows different domains with overlapping windows', () => {
     const dir = tracked(makeCandidate());
-    const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
     seedBundle(dir, 'dom-x-2026', {
       lifecycleRoot: validLifecycleRoot('dom-x-2026', { domainId: 'eval:a2a' }),
-      snapshot: validSnapshot({ window }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
     seedBundle(dir, 'dom-y-2026', {
       lifecycleRoot: validLifecycleRoot('dom-y-2026', { domainId: 'eval:friction' }),
-      snapshot: validSnapshot({ window }),
+      snapshot: validSnapshot({ window: COLLISION_WINDOW }),
     });
-    run(dir); // Different domains → no collision
+    run(dir);
   });
 
   // --- Args ---

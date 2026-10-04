@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  EVAL_METRIC_GLOSSARY_CHECK_NAME,
+  EVAL_EVIDENCE_CONTRACT_CHECK_NAME,
   publishVerdictCommitStatuses,
 } from '../../dist/infrastructure/harness-eval/publish-verdict/publication/verdict-commit-status-publisher.js';
 
@@ -15,7 +15,7 @@ describe('verdict commit status publisher', () => {
         headSha: 'a'.repeat(40),
         statuses: [
           {
-            context: EVAL_METRIC_GLOSSARY_CHECK_NAME,
+            context: EVAL_EVIDENCE_CONTRACT_CHECK_NAME,
             state: 'success',
             description: 'Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed',
           },
@@ -24,7 +24,7 @@ describe('verdict commit status publisher', () => {
       async (args) => calls.push(args),
     );
 
-    assert.equal(EVAL_METRIC_GLOSSARY_CHECK_NAME, 'Eval Metric Glossary Coverage');
+    assert.equal(EVAL_EVIDENCE_CONTRACT_CHECK_NAME, 'Eval Evidence Structural Contract');
     assert.deepEqual(calls, [
       [
         'api',
@@ -34,7 +34,7 @@ describe('verdict commit status publisher', () => {
         '--raw-field',
         'state=success',
         '--raw-field',
-        'context=Eval Metric Glossary Coverage',
+        'context=Eval Evidence Structural Contract',
         '--raw-field',
         'description=Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed',
       ],
@@ -49,7 +49,7 @@ describe('verdict commit status publisher', () => {
       headSha: 'a'.repeat(40),
       statuses: [
         {
-          context: EVAL_METRIC_GLOSSARY_CHECK_NAME,
+          context: EVAL_EVIDENCE_CONTRACT_CHECK_NAME,
           state: 'success',
           description: 'Candidate lifecycle-root, snapshot, provenance, and publication identity contracts passed',
         },
