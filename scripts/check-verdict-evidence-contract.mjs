@@ -130,19 +130,14 @@ const entries = readdirSync(bundlesDir, { withFileTypes: true })
   .filter((e) => e.isDirectory())
   .sort((a, b) => a.name.localeCompare(b.name));
 
-// Duplicate verdictId detection. Directory names are unique on the filesystem,
-// but lifecycle-root.json verdictId must also be unique across all bundles
-// (a malformed generator could write the same verdictId into two different directories).
-// Domain+window collision is NOT checked here: friction legitimately emits
-// aggregate + child bundles for the same {domainId, startMs, endMs};
-// the publisher pipeline owns domain-specific collision semantics.
-const seenVerdictIds = new Map();
+// Domain+window collision: within-candidate, same {domainId, startMs, endMs}
+// is only allowed for friction families (v3 children sharing a parent's window).
+// Non-friction duplicates = collision error (matches git-worktree-publisher.ts:213-222).
+const windowMap = new Map(); // key → first verdictId
 
 for (const entry of entries) {
   const bundleDir = join(bundlesDir, entry.name);
   const lifecycleRootPath = join(bundleDir, 'lifecycle-root.json');
-
-  // Historical bundles without lifecycle-root.json are tolerated
   if (!existsSync(lifecycleRootPath)) continue;
 
   let root;
@@ -152,7 +147,6 @@ for (const entry of entries) {
     fail('LIFECYCLE_ROOT_INVALID', `${entry.name}/lifecycle-root.json is not valid JSON: ${err.message}`);
   }
 
-  // Identity check: verdictId must match bundle directory name
   if (typeof root.verdictId !== 'string' || !root.verdictId) {
     fail('LIFECYCLE_ROOT_INVALID', `${entry.name}/lifecycle-root.json missing verdictId`);
   }
@@ -163,39 +157,62 @@ for (const entry of entries) {
     );
   }
 
-  // Full structural validation (canonical schema fields)
   validateLifecycleRoot(root, entry.name);
 
-  // Snapshot structural + window extraction
+  // Snapshot is required when lifecycle-root.json exists
   const snapshotPath = join(bundleDir, 'snapshot.json');
-  let snapshotWindow = null;
-  if (existsSync(snapshotPath)) {
-    let snap;
-    try {
-      snap = JSON.parse(readFileSync(snapshotPath, 'utf8'));
-    } catch (err) {
-      fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json is not valid JSON: ${err.message}`);
-    }
-    // Snapshot must have window.{startMs, endMs}
-    if (typeof snap.window !== 'object' || snap.window === null) {
-      fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json missing required 'window' object`);
-    }
-    if (typeof snap.window.startMs !== 'number') {
-      fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json window.startMs must be a number`);
-    }
-    if (typeof snap.window.endMs !== 'number') {
-      fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json window.endMs must be a number`);
-    }
-    snapshotWindow = { startMs: snap.window.startMs, endMs: snap.window.endMs };
+  if (!existsSync(snapshotPath)) {
+    fail('SNAPSHOT_MISSING', `${entry.name}/snapshot.json is required when lifecycle-root.json exists`);
+  }
+  let snap;
+  try {
+    snap = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+  } catch (err) {
+    fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json is not valid JSON: ${err.message}`);
+  }
+  if (typeof snap.window !== 'object' || snap.window === null) {
+    fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json missing required 'window' object`);
+  }
+  if (typeof snap.window.startMs !== 'number') {
+    fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json window.startMs must be a number`);
+  }
+  if (typeof snap.window.endMs !== 'number') {
+    fail('SNAPSHOT_INVALID', `${entry.name}/snapshot.json window.endMs must be a number`);
   }
 
-  // Duplicate verdictId detection (cross-directory identity collision)
-  if (seenVerdictIds.has(root.verdictId)) {
-    fail(
-      'verdict_window_duplicated_in_candidate',
-      `verdictId '${root.verdictId}' declared in multiple bundle directories: ` +
-        `'${seenVerdictIds.get(root.verdictId)}' and '${entry.name}'`,
-    );
+  // Provenance: required when lifecycle-root exists (fail-closed, not warn-only)
+  const provPath = join(bundleDir, 'provenance.json');
+  if (!existsSync(provPath)) {
+    fail('PROVENANCE_MISSING', `${entry.name}/provenance.json is required when lifecycle-root.json exists`);
   }
-  seenVerdictIds.set(root.verdictId, entry.name);
+  try {
+    const prov = JSON.parse(readFileSync(provPath, 'utf8'));
+    if (typeof prov !== 'object' || prov === null || Array.isArray(prov)) {
+      fail('PROVENANCE_INVALID', `${entry.name}/provenance.json must be a JSON object`);
+    }
+  } catch (err) {
+    fail('PROVENANCE_INVALID', `${entry.name}/provenance.json is not valid JSON: ${err.message}`);
+  }
+
+  // Domain+window collision detection
+  const windowKey = `${root.domainId}:${snap.window.startMs}:${snap.window.endMs}`;
+  // Schema-v3 with findingBinding + repairTarget = friction child: exempt from
+  // collision check (they share parent's domain+window by design).
+  const isFrictionChild =
+    root.schemaVersion >= 3 &&
+    typeof root.findingBinding === 'object' && root.findingBinding !== null &&
+    typeof root.repairTarget === 'object' && root.repairTarget !== null;
+  if (windowMap.has(windowKey)) {
+    const existing = windowMap.get(windowKey);
+    // Allow if both are in the same friction family (either is a v3 child)
+    if (!existing.isFrictionChild && !isFrictionChild) {
+      fail(
+        'WINDOW_COLLISION',
+        `bundles '${existing.verdictId}' and '${entry.name}' have the same domain+window ` +
+          `(${windowKey}) and neither is a friction child — duplicate publication`,
+      );
+    }
+  } else {
+    windowMap.set(windowKey, { verdictId: entry.name, isFrictionChild });
+  }
 }

@@ -39,7 +39,7 @@ function validSnapshot(overrides = {}) {
   };
 }
 
-function seedBundle(candidateRoot, verdictId, { lifecycleRoot, snapshot } = {}) {
+function seedBundle(candidateRoot, verdictId, { lifecycleRoot, snapshot, provenance } = {}) {
   const bundleDir = resolve(candidateRoot, 'docs/harness-feedback/bundles', verdictId);
   mkdirSync(bundleDir, { recursive: true });
   if (lifecycleRoot !== undefined) {
@@ -49,6 +49,12 @@ function seedBundle(candidateRoot, verdictId, { lifecycleRoot, snapshot } = {}) 
   if (snapshot !== undefined) {
     const data = typeof snapshot === 'string' ? snapshot : snapshot === true ? validSnapshot() : snapshot;
     writeFileSync(resolve(bundleDir, 'snapshot.json'), typeof data === 'string' ? data : JSON.stringify(data));
+  }
+  // Auto-seed valid provenance.json when lifecycle-root exists (unless explicit)
+  const prov = provenance ?? (lifecycleRoot !== undefined ? { generatedBy: 'test', generatedAt: '2026-01-01' } : undefined);
+  if (prov !== undefined && prov !== false) {
+    const pd = typeof prov === 'string' ? prov : JSON.stringify(prov);
+    writeFileSync(resolve(bundleDir, 'provenance.json'), pd);
   }
   return bundleDir;
 }
@@ -221,57 +227,73 @@ describe('check-verdict-evidence-contract', () => {
     assert.match(stderr, /SNAPSHOT_INVALID/);
   });
 
+  // --- Snapshot / provenance required ---
+
+  it('rejects missing snapshot when lifecycle-root exists', () => {
+    const dir = tracked(makeCandidate());
+    seedBundle(dir, 'no-snap-2026', { lifecycleRoot: true, snapshot: undefined, provenance: false });
+    // Force: lifecycle-root exists but no snapshot
+    const bundleDir = resolve(dir, 'docs/harness-feedback/bundles/no-snap-2026');
+    writeFileSync(resolve(bundleDir, 'provenance.json'), '{}');
+    const stderr = runExpectFail(dir);
+    assert.match(stderr, /SNAPSHOT_MISSING/);
+  });
+
+  it('rejects missing provenance when lifecycle-root exists', () => {
+    const dir = tracked(makeCandidate());
+    seedBundle(dir, 'no-prov-2026', { lifecycleRoot: true, snapshot: true, provenance: false });
+    const stderr = runExpectFail(dir);
+    assert.match(stderr, /PROVENANCE_MISSING/);
+  });
+
   // --- Collision detection ---
 
-  it('allows friction aggregate + child bundles with same domain/window', () => {
-    // Friction generator emits aggregate + child roots for same {domainId, window}.
-    // Domain/window collision semantics are publisher pipeline's responsibility,
-    // not the evidence guard's. The guard only checks verdictId identity.
+  it('allows friction v3 children with same domain/window (parent lineage)', () => {
     const dir = tracked(makeCandidate());
     const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
-    seedBundle(dir, 'aggregate-2026', {
-      lifecycleRoot: validLifecycleRoot('aggregate-2026', { domainId: 'eval:friction' }),
+    const v3Fields = {
+      schemaVersion: 3, caseId: 'eval-case-v1-' + 'a'.repeat(64),
+      findingKey: 'test-key', findingBinding: { kind: 'test' },
+      repairTarget: { featureId: 'F1', ownerCatId: 'opus', version: '1' },
+    };
+    seedBundle(dir, 'child-a-2026', {
+      lifecycleRoot: validLifecycleRoot('child-a-2026', { domainId: 'eval:friction', ...v3Fields }),
       snapshot: validSnapshot({ window }),
     });
-    seedBundle(dir, 'child-finding-1-2026', {
-      lifecycleRoot: validLifecycleRoot('child-finding-1-2026', { domainId: 'eval:friction' }),
+    seedBundle(dir, 'child-b-2026', {
+      lifecycleRoot: validLifecycleRoot('child-b-2026', { domainId: 'eval:friction', ...v3Fields }),
       snapshot: validSnapshot({ window }),
     });
-    run(dir); // Both same domain+window → should pass (different verdictIds)
+    run(dir); // v3 friction children share domain+window → allowed
   });
 
-  it('rejects two bundles with same verdictId in different directories', () => {
-    // A malformed generator could write the same verdictId into two directories.
+  it('rejects non-friction bundles with same domain/window (collision)', () => {
     const dir = tracked(makeCandidate());
-    seedBundle(dir, 'dir-a-2026', {
-      // Deliberately set verdictId to match another bundle's directory
-      lifecycleRoot: validLifecycleRoot('dir-b-2026', { domainId: 'eval:a2a' }),
-      snapshot: true,
+    const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
+    seedBundle(dir, 'dup-a-2026', {
+      lifecycleRoot: validLifecycleRoot('dup-a-2026', { domainId: 'eval:a2a' }),
+      snapshot: validSnapshot({ window }),
     });
-    // This will fail on identity mismatch first (verdictId != directory name),
-    // so we test the collision differently: create two dirs with lifecycle-root
-    // where the verdictId matches *their own* directory (identity passes) but
-    // the guard catches cross-bundle identity collision.
-    // Since filesystem enforces unique directory names, and verdictId must match
-    // directory name, this collision can only happen if verdictId identity check
-    // passes for each bundle individually. This test verifies the guard rejects
-    // the identity mismatch before collision can be reached.
+    seedBundle(dir, 'dup-b-2026', {
+      lifecycleRoot: validLifecycleRoot('dup-b-2026', { domainId: 'eval:a2a' }),
+      snapshot: validSnapshot({ window }),
+    });
     const stderr = runExpectFail(dir);
-    assert.match(stderr, /LIFECYCLE_ROOT_IDENTITY_MISMATCH/);
+    assert.match(stderr, /WINDOW_COLLISION/);
   });
 
-  it('passes two bundles with different verdictIds and same domain/window', () => {
+  it('allows different domains with overlapping windows', () => {
     const dir = tracked(makeCandidate());
     const window = { startMs: 5000, endMs: 6000, durationHours: 0.28 };
-    seedBundle(dir, 'dom-a-2026', {
-      lifecycleRoot: validLifecycleRoot('dom-a-2026', { domainId: 'eval:a2a' }),
+    seedBundle(dir, 'dom-x-2026', {
+      lifecycleRoot: validLifecycleRoot('dom-x-2026', { domainId: 'eval:a2a' }),
       snapshot: validSnapshot({ window }),
     });
-    seedBundle(dir, 'dom-b-2026', {
-      lifecycleRoot: validLifecycleRoot('dom-b-2026', { domainId: 'eval:a2a' }),
+    seedBundle(dir, 'dom-y-2026', {
+      lifecycleRoot: validLifecycleRoot('dom-y-2026', { domainId: 'eval:friction' }),
       snapshot: validSnapshot({ window }),
     });
-    run(dir); // Same domain+window, different verdictIds → allowed
+    run(dir); // Different domains → no collision
   });
 
   // --- Args ---
