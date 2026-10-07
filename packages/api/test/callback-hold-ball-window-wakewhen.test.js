@@ -12,6 +12,7 @@
  *   - wakeWhen is admitted even when the timer window is exhausted (3/3)
  *   - wakeAfterMs still reserves slots and still 429s on the 4th (mixed flow)
  *   - a failed wakeWhen materialization compensates nothing (no reservation)
+ *   - an unobservable timer count never blocks or half-materializes a command hold
  * Pure-timer exhaustion stays locked in callback-hold-ball-route-scheduling.test.js.
  */
 
@@ -278,6 +279,39 @@ describe('#1471: hold-ball sliding window counts timer holds only (wakeWhen exem
       assert.equal((await hold(app, headers, TIMED)).status, 500);
       assert.equal(releases.length, 1, 'timer failure releases exactly its own reservation');
       assert.equal(await timerCount(threadId), 1, 'count returns to the surviving timer hold');
+    } finally {
+      await drainAndClose(app);
+    }
+  });
+  test('an unobservable timer count never blocks or half-materializes a command hold', async () => {
+    // Review P1 on ba7e386f: the count read must run before any side effect and must
+    // tolerate failure — a quota-store read error is not a reason to refuse a command
+    // hold, and a refused registration must never leave an unstarted runner behind.
+    const failingStore = {
+      tryAdmit: (...args) => holdQuotaStore.tryAdmit(...args),
+      releaseByEventId: (...args) => holdQuotaStore.releaseByEventId(...args),
+      async getCount() {
+        throw new Error('simulated quota read failure');
+      },
+      async close() {},
+    };
+    const deps = makeStubDeps({ holdQuotaStore: failingStore });
+    const app = await createApp(deps);
+    const { threadId, headers } = await makeSession('user-1471-unobservable');
+    try {
+      assert.equal((await hold(app, headers, TIMED)).status, 200, 'one timer reservation exists');
+      const { status, body } = await hold(app, headers, COMMAND);
+      assert.equal(status, 200, 'the command hold proceeds despite the failed observability read');
+      assert.equal(body.held, true);
+      assert.equal(body.holdsInWindow, undefined, 'an unobservable count is omitted, never fabricated as 0');
+      assert.equal(body.wakeWhen?.command, 'echo ok', 'the command hold was materialized');
+      assert.equal(
+        typeof body.wakeWhen?.pid,
+        'number',
+        'the command actually spawned — no unstarted runner left behind',
+      );
+      assert.equal(deps._insertedTasks.length, 2, 'the command hold scheduled its wake carrier');
+      assert.equal(await holdQuotaStore.getCount(threadId, 'codex', HOLD_WINDOW_MS), 1, 'timer quota untouched');
     } finally {
       await drainAndClose(app);
     }

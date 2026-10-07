@@ -808,6 +808,21 @@ export function registerCallbackHoldBallRoutes(app: FastifyInstance, deps: HoldB
     // A's eventId targets only A's reservation, never B's.
     // A wakeWhen hold holds no reservation (#1471), so there is nothing to compensate.
     const eventId = admission?.eventId;
+    // #1471: for a command hold the window count is observability only. Read it here —
+    // before any materialization, runner preparation or prior-hold replacement — and
+    // tolerate read failure: the quota store must never sit on the command path's
+    // critical section, and an unobservable count is reported as absent, never as 0.
+    let observedTimerCount: number | undefined;
+    if (!admission) {
+      try {
+        observedTimerCount = await deps.holdQuotaStore.getCount(threadId, catIdStr, HOLD_WINDOW_MS);
+      } catch (err) {
+        log.warn(
+          { threadId, catId: catIdStr, err },
+          '#1471: timer window count unobservable for command hold — proceeding without holdsInWindow',
+        );
+      }
+    }
 
     const template = templateRegistry.get('reminder');
     if (!template) {
@@ -1072,11 +1087,9 @@ export function registerCallbackHoldBallRoutes(app: FastifyInstance, deps: HoldB
     }
 
     // Timer hold: quota already reserved atomically by tryAdmit() above and
-    // admission.count is the post-admission count. Command hold (#1471): report the
-    // current timer count read-only so holdsInWindow stays truthful without a slot.
-    const newCount = admission
-      ? admission.count
-      : await deps.holdQuotaStore.getCount(threadId, catIdStr, HOLD_WINDOW_MS);
+    // admission.count is the post-admission count. Command hold (#1471): the
+    // read-only timer count observed before materialization (absent if unobservable).
+    const newCount: number | undefined = admission ? admission.count : observedTimerCount;
 
     // ── Visibility message — F280 cancellation window ──
     // Post BEFORE launch to preserve F280 pre-launch cancellation fence (lines 834–837):
